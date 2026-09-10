@@ -25,6 +25,35 @@ v0.8 的 `client.addHeaderButton({ id, workspaceId, button })` 可以把按钮�
 本机当前是 **Paseo 0.7.0**（`paseo --version`），因此本插件仍使用 0.7 的单入口写法。
 等升级到 0.8 beta 后，再按官方 Migration 文档迁移并加 header buttons。
 
+## 显示位置（plugin.config.json）
+
+面板显示在哪些位置由插件目录下的 `plugin.config.json` 控制（不是每个项目的 `paseo.json`）：
+
+```json
+{
+  "locations": ["workspace", "explorer"]
+}
+```
+
+| 可选值 | 位置 |
+| --- | --- |
+| `workspace` | workspace 头部标签栏（与 Agents / Terminal / Files 并列） |
+| `explorer` | explorer 区域 |
+
+可以只选 1 个，也可以两个都选（默认两个）。改完需要重新加载插件（会重新编译）：
+
+```bash
+paseo plugin reload paseo-topbar-command
+```
+
+合法性规则：重复项会去重、顺序按 `workspace, explorer` 归一；非法值会被忽略并打 warning；
+空数组或全部非法会回退为两个位置（因为注册到任何位置都达不到的面板无法打开）。
+
+> 为何是插件级而不是项目级：Paseo 0.7 的面板位置在**插件加载时一次性注册**
+> （`addWorkspacePanel` 是静态 collector，见 `PluginWorkspacePanelContribution.locations`），
+> 组件也拿不到自己渲染在哪个 location，所以无法按项目动态切换。项目级仍然只有
+> `paseo.json` 里的 `buttons`。
+
 ## 详情下拉
 
 每个按钮卡片右侧都有一个 `▸ / ▾` 下拉按钮，与「执行按钮」相互独立：
@@ -162,7 +191,8 @@ macOS 下 `open -a/-b` 的语义正是「打开，若已打开则切换到它」
 | `description` | 否 | 按钮下的说明文字 |
 
 执行时按钮显示「运行中 + 耗时」与实时输出末尾，结束时显示 ✓/✕、退出码、总耗时与输出末尾；
-运行中可点「停止」。
+运行中可点「停止」。停止会终止**整个进程组**（不只是 shell），所以脚本里再启动的子进程
+（例如 Godot 游戏、webpack dev server）也会一起被关掉。
 
 ## 代码结构（Paseo 0.7 单入口风格）
 

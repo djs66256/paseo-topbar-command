@@ -64,6 +64,59 @@ export const configFileSchema = z.object({
   buttons: z.array(buttonSchema).default([]),
 });
 
+// ---------------------------------------------------------------------------
+// Plugin-level display locations (plugin.config.json)
+// ---------------------------------------------------------------------------
+
+/**
+ * Places a workspace panel can be registered in (Paseo's PluginPanelLocation).
+ * Paseo registers panel locations once at plugin load, so this is a *plugin*-
+ * level setting in plugin.config.json — it cannot vary per project.
+ */
+export const PANEL_LOCATIONS = ["workspace", "explorer"] as const;
+export type PanelLocation = (typeof PANEL_LOCATIONS)[number];
+export const DEFAULT_PANEL_LOCATIONS: readonly PanelLocation[] = PANEL_LOCATIONS;
+
+/**
+ * Normalize the `locations` field from plugin.config.json. Accepts one or more
+ * of "workspace" | "explorer"; duplicates are removed and unknown entries are
+ * dropped. A missing / empty / fully invalid list falls back to both locations
+ * (a panel registered nowhere would never be reachable).
+ */
+export function resolvePanelLocations(raw: unknown): {
+  locations: PanelLocation[];
+  error: string | null;
+} {
+  if (!Array.isArray(raw)) {
+    // Field absent: this is the normal default, not an error.
+    return { locations: [...DEFAULT_PANEL_LOCATIONS], error: null };
+  }
+
+  const allowed = new Set<string>(PANEL_LOCATIONS);
+  const selected = new Set<PanelLocation>();
+  const invalid: string[] = [];
+  for (const item of raw) {
+    if (typeof item === "string" && allowed.has(item)) {
+      selected.add(item as PanelLocation);
+    } else {
+      invalid.push(String(item));
+    }
+  }
+
+  if (selected.size === 0) {
+    return {
+      locations: [...DEFAULT_PANEL_LOCATIONS],
+      error: `locations 为空或全部非法（${invalid.join(", ") || "-"}），已回退为 ${DEFAULT_PANEL_LOCATIONS.join(" + ")}`,
+    };
+  }
+
+  return {
+    // Keep Paseo's canonical order regardless of the order in the config file.
+    locations: PANEL_LOCATIONS.filter((location) => selected.has(location)),
+    error: invalid.length > 0 ? `locations 已忽略非法值：${invalid.join(", ")}` : null,
+  };
+}
+
 export interface ParseConfigResult {
   buttons: ButtonConfig[];
   error: string | null;

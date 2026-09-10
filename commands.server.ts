@@ -215,6 +215,28 @@ function pushOutput(job: ScriptJob, chunk: Buffer) {
   }
 }
 
+/**
+ * Kill a script job's whole process tree. On POSIX the child is spawned as its
+ * own process group (`detached: true`), so a negative pid signal reaches the
+ * shell *and* everything it spawned (e.g. a Godot game the wrapper started).
+ */
+function killProcessTree(child: ChildProcess, signal: NodeJS.Signals) {
+  const pid = child.pid;
+  if (process.platform !== "win32" && typeof pid === "number") {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // Process group is gone or was never created; fall back to the child.
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // already gone
+  }
+}
+
 function finishJob(job: ScriptJob, exitCode: number | null) {
   job.exitCode = exitCode;
   job.finishedAt = Date.now();
@@ -266,7 +288,13 @@ export async function handleRunScriptStart(
   jobs.set(input.jobId, job);
 
   try {
-    const child = spawn(input.command, { cwd, shell: true, env: process.env });
+    const child = spawn(input.command, {
+      cwd,
+      shell: true,
+      env: process.env,
+      // POSIX: new process group so a stop can signal the whole tree.
+      detached: process.platform !== "win32",
+    });
     children.set(input.jobId, child);
     console.log(`${LOG_PREFIX} script-start: spawned jobId=${input.jobId} pid=${child.pid ?? "-"}`);
     child.stdout?.on("data", (chunk: Buffer) => pushOutput(job, chunk));
@@ -331,14 +359,10 @@ export async function handleRunScriptStop(
     `${LOG_PREFIX} script-stop: sending SIGTERM jobId=${input.jobId} pid=${child.pid ?? "-"}`,
   );
   try {
-    child.kill("SIGTERM");
+    killProcessTree(child, "SIGTERM");
     // Escalate if the process ignores SIGTERM.
     const killTimer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // already gone
-      }
+      killProcessTree(child, "SIGKILL");
     }, 2_000);
     killTimer.unref();
   } catch (error) {
@@ -355,11 +379,7 @@ export function stopAllScripts() {
     console.log(`${LOG_PREFIX} cleanup: stopping ${count} running script job(s)`);
   }
   for (const child of children.values()) {
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      // already gone
-    }
+    killProcessTree(child, "SIGTERM");
   }
   children.clear();
 }

@@ -8,7 +8,7 @@ import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { parseConfigText } from "../config.shared";
+import { parseConfigText, resolvePanelLocations } from "../config.shared";
 import {
   buildLaunchArgs,
   handleLoadConfig,
@@ -97,6 +97,43 @@ async function main(): Promise<void> {
       JSON.stringify({ buttons: [{ type: "script", id: "x" }] }),
     );
     assert.ok(error && error.includes("label"));
+  });
+
+  // -------------------------------------------------------------------------
+  console.log("\npanel display locations (resolvePanelLocations)");
+  // -------------------------------------------------------------------------
+
+  await test("missing locations defaults to both, without error", () => {
+    const { locations, error } = resolvePanelLocations(undefined);
+    assert.deepEqual(locations, ["workspace", "explorer"]);
+    assert.equal(error, null);
+  });
+
+  await test("a single location is honored", () => {
+    assert.deepEqual(resolvePanelLocations(["workspace"]).locations, ["workspace"]);
+    assert.deepEqual(resolvePanelLocations(["explorer"]).locations, ["explorer"]);
+  });
+
+  await test("multiple locations are deduped and put in canonical order", () => {
+    const { locations, error } = resolvePanelLocations(["explorer", "workspace", "workspace"]);
+    assert.deepEqual(locations, ["workspace", "explorer"]);
+    assert.equal(error, null);
+  });
+
+  await test("unknown values are dropped and reported", () => {
+    const { locations, error } = resolvePanelLocations(["workspace", "sidebar", 42]);
+    assert.deepEqual(locations, ["workspace"]);
+    assert.ok(error && error.includes("sidebar"));
+  });
+
+  await test("empty or fully invalid list falls back to both with an error", () => {
+    const empty = resolvePanelLocations([]);
+    assert.deepEqual(empty.locations, ["workspace", "explorer"]);
+    assert.ok(empty.error);
+
+    const invalid = resolvePanelLocations(["nope"]);
+    assert.deepEqual(invalid.locations, ["workspace", "explorer"]);
+    assert.ok(invalid.error && invalid.error.includes("nope"));
   });
 
   // -------------------------------------------------------------------------

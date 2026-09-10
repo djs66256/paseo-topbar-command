@@ -8,6 +8,8 @@
 // per-project — a natural fit for the per-project paseo.json config.
 import type { PluginContext } from "@getpaseo/plugin";
 import { CommandsPanel } from "./commands.client";
+import { resolvePanelLocations } from "./config.shared";
+import pluginConfig from "./plugin.config.json";
 import {
   handleLoadConfig,
   handleOpenApp,
@@ -24,13 +26,26 @@ import {
   runScriptStopRpc,
 } from "./rpc.shared";
 
+const LOG_PREFIX = "[paseo-topbar-command]";
+
 export default function contribute(plugin: PluginContext) {
+  // Display locations come from plugin.config.json. Paseo registers workspace
+  // panel locations once at plugin load, so this is plugin-level (not per
+  // project): edit plugin.config.json, then `paseo plugin reload`.
+  const { locations, error: locationsError } = resolvePanelLocations(
+    (pluginConfig as { locations?: unknown }).locations,
+  );
+  if (locationsError) {
+    console.warn(`${LOG_PREFIX} plugin.config.json: ${locationsError}`);
+  }
+  console.log(`${LOG_PREFIX} panel locations: ${locations.join(", ")}`);
+
   plugin.addWorkspacePanel({
     id: "commands",
     title: "Commands",
     icon: "SquareTerminal",
     context: "workspace",
-    locations: ["workspace", "explorer"],
+    locations,
     Component: CommandsPanel,
   });
 
