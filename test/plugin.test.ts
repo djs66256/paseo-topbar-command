@@ -3,12 +3,21 @@
 //
 // Run with: npm test
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, realpath, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { parseConfigText, resolvePanelLocations } from "../config.shared";
+import {
+  credentialKey,
+  discoverApiKey,
+  handleUsageConfigSave,
+  parseCommandCodePayload,
+  parseMinimaxPayload,
+  providerAliases,
+  searchProvider,
+} from "../usage.server";
 import {
   buildLaunchArgs,
   handleLoadConfig,
@@ -134,6 +143,215 @@ async function main(): Promise<void> {
     const invalid = resolvePanelLocations(["nope"]);
     assert.deepEqual(invalid.locations, ["workspace", "explorer"]);
     assert.ok(invalid.error && invalid.error.includes("nope"));
+  });
+
+  // -------------------------------------------------------------------------
+  console.log("\nusage button config + key discovery");
+  // -------------------------------------------------------------------------
+
+  await test("usage button parses with provider + overrides", () => {
+    const { buttons, error } = parseConfigText(
+      JSON.stringify({
+        buttons: [
+          {
+            type: "usage",
+            id: "cc",
+            label: "CommandCode",
+            provider: "commandcode",
+            apiKeyEnv: "COMMAND_CODE_API_KEY",
+            refreshIntervalMinutes: 60,
+          },
+        ],
+      }),
+    );
+    assert.equal(error, null);
+    assert.equal(buttons[0].type, "usage");
+    if (buttons[0].type === "usage") {
+      assert.equal(buttons[0].provider, "commandcode");
+      assert.equal(buttons[0].refreshIntervalMinutes, 60);
+    }
+  });
+
+  await test("provider aliases prefer the exact id and include variants", () => {
+    assert.equal(providerAliases("minimax-cn")[0], "minimax-cn");
+    const cc = providerAliases("commandcode");
+    assert.ok(cc.includes("command-code"));
+    assert.ok(cc.includes("command_code"));
+  });
+
+  await test("credentialKey handles api/oauth credential shapes", () => {
+    assert.equal(credentialKey({ type: "api", key: "sk-x" }), "sk-x");
+    assert.equal(credentialKey({ type: "oauth", access: "tok", key: "k" }), "tok");
+    assert.equal(credentialKey("  raw-key  "), "raw-key");
+    assert.equal(credentialKey({}), null);
+  });
+
+  await test("searchProvider finds auth entries and models.json providers", () => {
+    const fromAuth = searchProvider({ commandcode: { type: "api", key: "k1" } }, ["commandcode"]);
+    assert.equal(fromAuth?.key, "k1");
+    const fromModels = searchProvider(
+      { providers: { "coding-plan": { apiKey: "ark-1" } } },
+      ["coding-plan"],
+    );
+    assert.equal(fromModels?.key, "ark-1");
+    assert.equal(fromModels?.pointer, "providers.coding-plan.apiKey");
+  });
+
+  await test("discoverApiKey: env var wins", async () => {
+    const found = await discoverApiKey({
+      provider: "commandcode",
+      apiKeyEnv: "MY_CC_KEY",
+      home: tmpRoot,
+      env: { MY_CC_KEY: "env-key" },
+    });
+    assert.equal(found.key, "env-key");
+    assert.equal(found.source, "env:MY_CC_KEY");
+  });
+
+  await test("discoverApiKey: explicit file + JSON pointer", async () => {
+    const file = path.join(tmpRoot, "creds.json");
+    await writeFile(file, JSON.stringify({ commandcode: { type: "api", key: "ptr-key" } }));
+    const found = await discoverApiKey({
+      provider: "commandcode",
+      apiKeyPath: `${file}#commandcode.key`,
+      home: tmpRoot,
+      env: {},
+    });
+    assert.equal(found.key, "ptr-key");
+  });
+
+  await test("discoverApiKey: auto-searches pi auth.json", async () => {
+    const home = path.join(tmpRoot, "home-pi");
+    await mkdir(path.join(home, ".pi", "agent"), { recursive: true });
+    await writeFile(
+      path.join(home, ".pi", "agent", "auth.json"),
+      JSON.stringify({
+        commandcode: { type: "api", key: "auto-key" },
+        "minimax-cn": { type: "api_key", key: "sk-cp-mini" },
+      }),
+    );
+    const cc = await discoverApiKey({ provider: "commandcode", home, env: {} });
+    assert.equal(cc.key, "auto-key");
+    assert.ok(cc.source && cc.source.includes("auth.json#commandcode"));
+    const mm = await discoverApiKey({ provider: "minimax-cn", home, env: {} });
+    assert.equal(mm.key, "sk-cp-mini");
+  });
+
+  await test("parseCommandCodePayload normalizes credits, windows and plan", () => {
+    const parsed = parseCommandCodePayload({
+      credits: {
+        credits: { monthlyCredits: 57.16, purchasedCredits: 0, freeCredits: 0 },
+        windowLimits: {
+          fiveHour: { used: 1.26, cap: 14, resetAt: 1789030101209 },
+          weekly: { used: 12.82, cap: 35, resetAt: 1789105156687 },
+        },
+      },
+      subscriptions: { data: { planId: "price_abc", status: "active" } },
+      summary: { totalCount: 3613, totalCost: 12.72, totalTokens: 634504819 },
+      account: "djs",
+      orgId: null,
+    });
+    assert.equal(parsed.windows.length, 2);
+    assert.equal(parsed.windows[0].key, "fiveHour");
+    assert.ok(parsed.windows[0].remainingPercent !== null && parsed.windows[0].remainingPercent > 90);
+    assert.ok(parsed.metrics.some((metric) => metric.label === "剩余"));
+    assert.ok(parsed.metrics.some((metric) => metric.label === "Tokens"));
+    assert.ok(parsed.plan && parsed.plan.includes("price abc"));
+  });
+
+  await test("parseMinimaxPayload normalizes remaining percent windows", () => {
+    const parsed = parseMinimaxPayload({
+      model_remains: [
+        {
+          model_name: "general",
+          current_interval_remaining_percent: 99,
+          current_weekly_remaining_percent: 90,
+          end_time: 1789023600000,
+          weekly_end_time: 1789315200000,
+        },
+        { model_name: "video", current_interval_remaining_percent: 100 },
+      ],
+      base_resp: { status_code: 0, status_msg: "success" },
+    });
+    assert.equal(parsed.error, null);
+    assert.equal(parsed.windows.length, 2);
+    assert.equal(parsed.windows[0].key, "interval");
+    assert.equal(parsed.windows[0].remainingPercent, 99);
+    assert.equal(parsed.windows[0].resetAt, 1789023600000);
+    assert.equal(parsed.details.length, 2);
+  });
+
+  await test("parseMinimaxPayload surfaces base_resp errors", () => {
+    const parsed = parseMinimaxPayload({
+      base_resp: { status_code: 1004, status_msg: "cookie is missing" },
+    });
+    assert.ok(parsed.error && parsed.error.includes("1004"));
+    assert.equal(parsed.windows.length, 0);
+  });
+
+  await test("usage-config-save patches the button and preserves the file", async () => {
+    const dir = path.join(tmpRoot, "usage-save");
+    await mkdir(dir, { recursive: true });
+    const file = path.join(dir, "paseo.json");
+    await writeFile(
+      file,
+      JSON.stringify({
+        worktree: { setup: "echo hi" },
+        buttons: [
+          { type: "usage", id: "u", label: "U", provider: "commandcode" },
+          { type: "script", id: "s", label: "S", command: "echo" },
+        ],
+      }),
+    );
+    const result = await handleUsageConfigSave(
+      {
+        projectRoot: dir,
+        buttonId: "u",
+        provider: "minimax-cn",
+        apiKey: "",
+        apiKeyEnv: "MINIMAX_CN_API_KEY",
+        apiKeyPath: "",
+        baseUrl: "",
+        refreshIntervalMinutes: 30,
+      },
+      ctx,
+    );
+    assert.equal(result.ok, true);
+    const saved = JSON.parse(await readFile(file, "utf8")) as {
+      worktree: { setup: string };
+      buttons: Array<Record<string, unknown>>;
+    };
+    assert.equal(saved.worktree.setup, "echo hi");
+    const usage = saved.buttons.find((entry) => entry.id === "u");
+    assert.equal(usage?.provider, "minimax-cn");
+    assert.equal(usage?.apiKeyEnv, "MINIMAX_CN_API_KEY");
+    assert.equal(usage?.apiKey, undefined);
+    assert.equal(usage?.refreshIntervalMinutes, 30);
+    assert.equal(saved.buttons.find((entry) => entry.id === "s")?.command, "echo");
+  });
+
+  await test("usage-config-save rejects non-usage buttons", async () => {
+    const dir = path.join(tmpRoot, "usage-save-bad");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, "paseo.json"),
+      JSON.stringify({ buttons: [{ type: "script", id: "s", label: "S", command: "echo" }] }),
+    );
+    const result = await handleUsageConfigSave(
+      {
+        projectRoot: dir,
+        buttonId: "s",
+        provider: "commandcode",
+        apiKey: "",
+        apiKeyEnv: "",
+        apiKeyPath: "",
+        baseUrl: "",
+        refreshIntervalMinutes: 60,
+      },
+      ctx,
+    );
+    assert.equal(result.ok, false);
+    assert.ok(result.error && result.error.includes("不是 usage"));
   });
 
   // -------------------------------------------------------------------------

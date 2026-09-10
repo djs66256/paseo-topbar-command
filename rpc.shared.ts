@@ -1,7 +1,7 @@
 // RPC contracts shared by the client panel and the daemon handlers.
 import { defineRpc } from "@getpaseo/plugin/server";
 import { z } from "zod";
-import { buttonSchema } from "./config.shared";
+import { buttonSchema, usageResultSchema } from "./config.shared";
 
 /** Read + validate <projectRoot>/paseo.json on the daemon machine. */
 export const loadConfigRpc = defineRpc({
@@ -69,4 +69,38 @@ export const runScriptStopRpc = defineRpc({
   name: "paseo-topbar-command.script-stop",
   input: z.object({ jobId: z.string().min(1) }),
   output: z.object({ ok: z.boolean() }),
+});
+
+/**
+ * Fetch coding-plan usage for a provider. The daemon discovers the API key from
+ * pi's config files unless an explicit key/env/path is given.
+ */
+export const usageFetchRpc = defineRpc({
+  name: "paseo-topbar-command.usage-fetch",
+  input: z.object({
+    provider: z.string().min(1),
+    projectRoot: z.string(),
+    apiKey: z.string().nullable(),
+    apiKeyEnv: z.string().nullable(),
+    apiKeyPath: z.string().nullable(),
+    baseUrl: z.string().nullable(),
+  }),
+  output: usageResultSchema,
+});
+
+/** Patch a usage button's manual config back into the project's paseo.json. */
+export const usageConfigSaveRpc = defineRpc({
+  name: "paseo-topbar-command.usage-config-save",
+  input: z.object({
+    projectRoot: z.string(),
+    buttonId: z.string().min(1),
+    provider: z.string().min(1),
+    /** Empty strings mean "unset" (the field is removed). */
+    apiKey: z.string(),
+    apiKeyEnv: z.string(),
+    apiKeyPath: z.string(),
+    baseUrl: z.string(),
+    refreshIntervalMinutes: z.number().positive(),
+  }),
+  output: z.object({ ok: z.boolean(), error: z.string().nullable(), source: z.string() }),
 });

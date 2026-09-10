@@ -18,12 +18,15 @@ import {
   handleRunScriptStop,
   stopAllScripts,
 } from "./commands.server";
+import { handleUsageConfigSave, handleUsageFetch } from "./usage.server";
 import {
   loadConfigRpc,
   openAppRpc,
   runScriptPollRpc,
   runScriptStartRpc,
   runScriptStopRpc,
+  usageConfigSaveRpc,
+  usageFetchRpc,
 } from "./rpc.shared";
 
 const LOG_PREFIX = "[paseo-topbar-command]";
@@ -65,6 +68,8 @@ export default function contribute(plugin: PluginContext) {
   plugin.handle(runScriptStartRpc, handleRunScriptStart);
   plugin.handle(runScriptPollRpc, handleRunScriptPoll);
   plugin.handle(runScriptStopRpc, handleRunScriptStop);
+  plugin.handle(usageFetchRpc, handleUsageFetch);
+  plugin.handle(usageConfigSaveRpc, handleUsageConfigSave);
 
   return () => {
     // `stopAllScripts` lives in commands.server.ts, which the client build strips

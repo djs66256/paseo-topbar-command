@@ -194,14 +194,64 @@ macOS 下 `open -a/-b` 的语义正是「打开，若已打开则切换到它」
 运行中可点「停止」。停止会终止**整个进程组**（不只是 shell），所以脚本里再启动的子进程
 （例如 Godot 游戏、webpack dev server）也会一起被关掉。
 
+### usage 按钮（coding plan 用量）
+
+在面板里展示某个 coding plan 的用量，自动从 **pi 的配置文件**里找 apiKey，默认每 **1 小时**刷新。
+
+```json
+{
+  "buttons": [
+    { "type": "usage", "id": "usage-commandcode", "label": "CommandCode 用量", "provider": "commandcode" },
+    { "type": "usage", "id": "usage-minimax-cn", "label": "MiniMax CN 用量", "provider": "minimax-cn", "refreshIntervalMinutes": 30 }
+  ]
+}
+```
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `type` | 是 | `"usage"` |
+| `id` | 是 | 按钮唯一 id |
+| `label` | 是 | 卡片标题 |
+| `provider` | 是 | 内置：`commandcode` / `minimax-cn` / `minimax`；也接受任意 pi provider 名字（用 pi 配置里的 key） |
+| `apiKey` | 否 | 显式 key（会写进 paseo.json，不推荐；优先用下面两个） |
+| `apiKeyEnv` | 否 | 环境变量名，如 `COMMAND_CODE_API_KEY` / `MINIMAX_CN_API_KEY` |
+| `apiKeyPath` | 否 | 文件路径 + `#a.b.c` JSON 指针，如 `~/.pi/agent/auth.json#commandcode.key` |
+| `baseUrl` | 否 | 覆盖默认端点（自建/代理时用） |
+| `refreshIntervalMinutes` | 否 | 自动刷新间隔，默认 `60`（1 小时） |
+| `description` | 否 | 卡片副标题（缺省显示 provider） |
+
+**apiKey 自动搜索顺序**：`apiKey` → `apiKeyEnv` → provider 默认环境变量 → `apiKeyPath` →
+依次搜 `~/.pi/agent/auth.json`、`~/.pi/agent/models.json`、`~/.pi/agent/models-store.json`、
+`~/.commandcode/auth.json`、`~/.omp/agent/auth.json`、`~/.config/pi/agent/auth.json`。
+在 auth.json 里支持 `{type:"api",key}` / `{type:"oauth",access}`；在 models.json 里支持
+`providers.<name>.apiKey`（例如 `coding-plan`）。卡片展开详情会显示实际的 **Key 来源**。
+
+**内置 provider 端点**：
+
+| provider | 端点 | 展示 |
+| --- | --- | --- |
+| `commandcode` | `https://api.commandcode.ai`（whoami / billing credits+subscriptions / usage summary） | 剩余与已用额度、$%、5 小时 + 每周窗口、请求数、Tokens、套餐 |
+| `minimax-cn` | `https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains` | 5 小时 / 每周剩余百分比 + 重置倒计时、各模型明细 |
+| `minimax` | `https://www.minimax.io/...` 同上 | 同上 |
+
+**卡片 UI**（三个独立操作 + 展开）：
+
+- 点标题 / `↻`：立即刷新；
+- `⚙`：进入**手动配置页**（provider 快选、key / env / 路径 / baseUrl / 刷新间隔），保存写回项目根目录的 `paseo.json`；
+- `▸/▾`：展开详情（进度条、重置倒计时、各项指标、Key 来源、更新时间）。
+
+自动刷新：客户端一个 30s 定时器按每个卡片的 `refreshIntervalMinutes` 到期即重拉（默认 1h）。
+
 ## 代码结构（Paseo 0.7 单入口风格）
 
 ```
 index.ts            入口：注册 workspace 面板、Command Center 项、RPC handler
 commands.client.tsx 客户端面板 UI（仅 App bundle）
 commands.server.ts  daemon 侧：读配置、聚焦应用、spawn 脚本任务
+usage.server.ts     daemon 侧：coding plan 用量（key 自动发现 + provider 适配 + 配置写回）
 config.shared.ts    paseo.json 的 Zod schema（两端共享）
 rpc.shared.ts       RPC 契约（两端共享）
+plugin.config.json  插件级显示位置（locations）
 ```
 
 > 注意：`index.ts` 是客户端与 daemon 两份 bundle 的公共入口。Paseo 编译器会在客户端 bundle

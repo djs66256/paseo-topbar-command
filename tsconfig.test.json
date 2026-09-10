@@ -12,6 +12,7 @@
   "include": [
     "test/**/*.ts",
     "commands.server.ts",
+    "usage.server.ts",
     "config.shared.ts",
     "paseo-plugin.d.ts"
   ]
