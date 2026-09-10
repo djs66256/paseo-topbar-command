@@ -8,16 +8,17 @@
 
 ## 关于「topbar」
 
-Paseo **0.6.1（当前安装版本）** 的插件 API **没有**顶栏按钮的贡献点
-（该能力在 Paseo 插件路线图上，v0.8 才加入 header buttons）。
-本插件使用 API 支持的最接近方案：一个 **workspace 面板**，它会出现在 workspace 头部
-标签栏（与 Agents / Terminal / Files 并列），并且是**按项目**的 —— 正好匹配按项目的 `paseo.json` 配置。
+Paseo **0.8.0** 已经加入 header buttons（`client.addHeaderButton`），但它在注册时就绑定到
+**某一个 workspace**，而本插件的配置是按项目生效的；因此仍使用 API 支持的最接近方案：
+一个 **workspace 面板**，它会出现在 workspace 头部标签栏（与 Agents / Terminal / Files 并列），
+并且是**按项目**的 —— 正好匹配按项目的 `paseo.json` 配置。
 另外注册了一个 Command Center 项（⌘K 搜索 “Open project commands”）快速打开。
 
 ## 安装
 
 ```bash
-npm run typecheck
+pnpm install
+pnpm typecheck
 paseo plugin install /绝对路径/paseo-topbar-command
 paseo plugin ls          # 应显示 running
 ```
@@ -26,7 +27,7 @@ paseo plugin ls          # 应显示 running
 改代码后重载：
 
 ```bash
-npm run typecheck
+pnpm typecheck
 paseo plugin reload paseo-topbar-command
 ```
 
@@ -83,16 +84,19 @@ macOS 下 `open -a/-b` 的语义正是「打开，若已打开则切换到它」
 执行时按钮显示「运行中 + 耗时」与实时输出末尾，结束时显示 ✓/✕、退出码、总耗时与输出末尾；
 运行中可点「停止」。
 
-## 代码结构（Paseo 0.6.1 单入口风格）
+## 代码结构（Paseo 0.8 runtime entries）
 
 ```
-index.ts            入口：注册 workspace 面板、Command Center 项、RPC handler
-commands.client.tsx 客户端面板 UI（仅 App bundle）
-commands.server.ts  daemon 侧：读配置、聚焦应用、spawn 脚本任务
-config.shared.ts    paseo.json 的 Zod schema（两端共享）
-rpc.shared.ts       RPC 契约（两端共享）
+paseo-plugin.json   清单：插件 id + requirements.paseo (>=0.8.0)
+index.client.tsx    client 入口：注册 workspace 面板、Command Center 项
+index.server.ts     server 入口：注册 RPC handler、卸载时停止脚本任务
+client/commands.tsx 客户端面板 UI（仅 App bundle）
+server/commands.ts  daemon 侧：读配置、聚焦应用、spawn 脚本任务（仅 daemon bundle）
+shared/config.ts    paseo.json 的 Zod schema（两端共享）
+shared/rpc.ts       RPC 契约（两端共享）
 ```
 
-> 注意：`index.ts` 是客户端与 daemon 两份 bundle 的公共入口。Paseo 编译器会在客户端 bundle
-> 中剔除 `plugin.handle(...)` 以及对 `*.server` 的 import（反之在 daemon bundle 中剔除 UI 注册）。
-> 因此 index.ts 里的清理函数对 `stopAllScripts` 做了 `typeof` 保护，保证客户端 bundle 中为安全的 no-op。
+> Paseo 0.8 移除了旧的单入口 `index.ts`：`client/`、`server/`、`shared/` 目录即编译边界，
+> client 代码不能 import `server/`（反之亦然），root 下也不允许放代码模块。
+> 类型检查使用 npm 上的 `@getpaseo/plugin`（devDependency，本仓库固定在 0.8.0），
+> 运行时实例由 Paseo 提供，不需要在插件里打包。

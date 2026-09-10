@@ -1,18 +1,18 @@
 // Client panel UI. This file compiles only into the app bundle; no Node APIs here.
-// Theme tokens available in Paseo 0.6.1: surface0, foreground, foregroundMuted,
-// accent, accentForeground, statusDanger. Use only those.
+// Theme tokens are the Paseo 0.8 PluginTheme colors; this panel uses surface0,
+// foreground, foregroundMuted, accent and statusDanger.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
-import type { PluginWorkspacePanelProps } from "@getpaseo/plugin";
-import { useRpc, useWorkspace } from "@getpaseo/plugin";
-import type { AppButton, ButtonConfig, ScriptButton } from "./config.shared";
+import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
+import { useRpc, useWorkspace } from "@getpaseo/plugin/client";
+import type { AppButton, ButtonConfig, ScriptButton } from "../shared/config";
 import {
   loadConfigRpc,
   openAppRpc,
   runScriptPollRpc,
   runScriptStartRpc,
   runScriptStopRpc,
-} from "./rpc.shared";
+} from "../shared/rpc";
 
 type ButtonRunState =
   | { status: "idle" }

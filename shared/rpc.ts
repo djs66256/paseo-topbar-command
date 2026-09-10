@@ -1,7 +1,7 @@
 // RPC contracts shared by the client panel and the daemon handlers.
-import { defineRpc } from "@getpaseo/plugin/server";
+import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
-import { buttonSchema } from "./config.shared";
+import { buttonSchema } from "./config";
 
 /** Read + validate <projectRoot>/paseo.json on the daemon machine. */
 export const loadConfigRpc = defineRpc({

@@ -3,15 +3,23 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { PluginHandlerContext } from "@getpaseo/plugin";
-import { parseConfigText } from "./config.shared";
+import type { RpcInput } from "@getpaseo/plugin";
+import type { PluginHandlerContext } from "@getpaseo/plugin/server";
+import { parseConfigText } from "../shared/config";
+import {
+  loadConfigRpc,
+  openAppRpc,
+  runScriptPollRpc,
+  runScriptStartRpc,
+  runScriptStopRpc,
+} from "../shared/rpc";
 
 // ---------------------------------------------------------------------------
 // Config loading
 // ---------------------------------------------------------------------------
 
 export async function handleLoadConfig(
-  input: { projectRoot: string },
+  input: RpcInput<typeof loadConfigRpc>,
   _context: PluginHandlerContext,
 ) {
   const configPath = path.join(input.projectRoot, "paseo.json");
@@ -50,7 +58,7 @@ function runExecFile(
 }
 
 export async function handleOpenApp(
-  input: { app: string; bundleId: string | null },
+  input: RpcInput<typeof openAppRpc>,
   _context: PluginHandlerContext,
 ) {
   const { app, bundleId } = input;
@@ -124,7 +132,7 @@ function finishJob(job: ScriptJob, exitCode: number | null) {
 }
 
 export async function handleRunScriptStart(
-  input: { jobId: string; command: string; projectRoot: string; cwd: string },
+  input: RpcInput<typeof runScriptStartRpc>,
   _context: PluginHandlerContext,
 ) {
   const existing = jobs.get(input.jobId);
@@ -180,7 +188,7 @@ type ScriptPollResult = {
 };
 
 export async function handleRunScriptPoll(
-  input: { jobId: string },
+  input: RpcInput<typeof runScriptPollRpc>,
   _context: PluginHandlerContext,
 ): Promise<ScriptPollResult> {
   const job = jobs.get(input.jobId);
@@ -197,7 +205,7 @@ export async function handleRunScriptPoll(
 }
 
 export async function handleRunScriptStop(
-  input: { jobId: string },
+  input: RpcInput<typeof runScriptStopRpc>,
   _context: PluginHandlerContext,
 ) {
   const child = children.get(input.jobId);

@@ -1,3 +1,6 @@
 {
-  "id": "paseo-topbar-command"
+  "id": "paseo-topbar-command",
+  "requirements": {
+    "paseo": ">=0.8.0"
+  }
 }
