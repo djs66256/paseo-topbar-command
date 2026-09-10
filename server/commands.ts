@@ -138,6 +138,209 @@ export function buildLaunchArgs(input: AppLaunchInput): {
   return { extraArgs, resolvedProjectPath };
 }
 
+// ---------------------------------------------------------------------------
+// Same-project instance detection
+// ---------------------------------------------------------------------------
+
+/** Run a command and return its trimmed non-empty stdout lines; [] on failure. */
+function runExecFileLines(file: string, args: string[]): Promise<string[]> {
+  return new Promise((resolve) => {
+    execFile(file, args, { timeout: 10_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+      if (error) {
+        console.error(`${LOG_PREFIX} exec-lines: ${file} 失败 — ${describe(error)}`);
+        resolve([]);
+        return;
+      }
+      resolve(
+        String(stdout)
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean),
+      );
+    });
+  });
+}
+
+/**
+ * Process names that may identify the app in the process list: the app name,
+ * the last bundle-id component (org.godotengine.Godot → Godot), and the app
+ * name without a trailing `.app`.
+ */
+function candidateProcessNames(app: string, bundleId: string | null): string[] {
+  const names = new Set<string>();
+  if (bundleId) {
+    const lastComponent = bundleId.split(".").pop();
+    if (lastComponent) names.add(lastComponent);
+  }
+  names.add(app);
+  if (app.endsWith(".app")) names.add(app.slice(0, -4));
+  return [...names];
+}
+
+/**
+ * True when a process command line opens the resolved project: the `--path`
+ * flag followed by exactly that path. Matching is token-segment based, so a
+ * path containing spaces survives the way `ps` renders argv, and a shorter
+ * path can never match a longer one by prefix.
+ */
+export function commandLineOpensProject(
+  commandLine: string,
+  resolvedProjectPath: string,
+): boolean {
+  // macOS `ps` renders the NUL separators between argv entries as the literal
+  // text `\012` for directly spawned processes (`open`-launched apps render
+  // cleanly). Normalizing them to spaces makes both renderings tokenize alike.
+  const normalized = commandLine.replace(/\\012/g, " ");
+  const tokens = normalized.split(/\s+/);
+  const segments = resolvedProjectPath.split(/\s+/);
+  for (let i = 0; i + segments.length <= tokens.length; i++) {
+    if (tokens[i] !== "--path") continue;
+    let matched = true;
+    for (let j = 0; j < segments.length; j++) {
+      if (tokens[i + 1 + j] !== segments[j]) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) return true;
+  }
+  return false;
+}
+
+/** Read a process's argv from /proc (NUL-separated, lossless). */
+async function readProcCmdline(pid: number): Promise<string[] | null> {
+  try {
+    const buffer = await readFile(`/proc/${pid}/cmdline`);
+    return buffer.toString().split("\0").filter(Boolean);
+  } catch {
+    // Process exited between the listing and this read.
+    return null;
+  }
+}
+
+/** Exact-match a `--path <resolved>` pair in a Linux argv. */
+export function procArgvOpensProject(
+  argv: readonly string[],
+  resolvedProjectPath: string,
+): boolean {
+  for (let i = 0; i < argv.length - 1; i++) {
+    if (argv[i] === "--path" && argv[i + 1] === resolvedProjectPath) return true;
+  }
+  return false;
+}
+
+/** True when the process still exists (checked before focusing a detected instance). */
+async function processAlive(pid: number): Promise<boolean> {
+  const lines = await runExecFileLines("ps", ["-p", String(pid), "-o", "pid="]);
+  return lines.length > 0;
+}
+
+/**
+ * Find the pid of a running instance of the app that has `resolvedProjectPath`
+ * open — identified by the `--path <resolved>` pair in its argv. Returns null
+ * when no such instance exists (or the platform can't be probed); callers fall
+ * back to launching.
+ */
+export async function findExistingInstanceForProject(
+  app: string,
+  bundleId: string | null,
+  resolvedProjectPath: string,
+  platform: NodeJS.Platform,
+): Promise<number | null> {
+  const names = new Set(candidateProcessNames(app, bundleId).map((name) => name.toLowerCase()));
+
+  if (platform === "darwin") {
+    const lines = await runExecFileLines("ps", ["axww", "-o", "pid=,command="]);
+    for (const line of lines) {
+      const match = line.match(/^(\d+)\s+(.+)$/);
+      if (!match) continue;
+      const executable = match[2].split(/\s+/)[0] ?? "";
+      if (!names.has(path.basename(executable).toLowerCase())) continue;
+      if (commandLineOpensProject(match[2], resolvedProjectPath)) return Number(match[1]);
+    }
+    return null;
+  }
+
+  if (platform === "linux") {
+    const lines = await runExecFileLines("ps", ["-eo", "pid=,comm="]);
+    for (const line of lines) {
+      const match = line.match(/^(\d+)\s+(.+)$/);
+      if (!match) continue;
+      if (!names.has(match[2].trim().toLowerCase())) continue;
+      const argv = await readProcCmdline(Number(match[1]));
+      if (argv && procArgvOpensProject(argv, resolvedProjectPath)) return Number(match[1]);
+    }
+    return null;
+  }
+
+  if (platform === "win32") {
+    const filters = [...names].map((name) => `Name -like '${name}*'`).join(" -or ");
+    const lines = await runExecFileLines("powershell", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `Get-CimInstance Win32_Process | Where-Object { ${filters} } | ForEach-Object { "$($_.ProcessId)|$($_.CommandLine)" }`,
+    ]);
+    for (const line of lines) {
+      const separator = line.indexOf("|");
+      if (separator <= 0) continue;
+      const pidText = line.slice(0, separator);
+      if (!/^\d+$/.test(pidText)) continue;
+      if (commandLineOpensProject(line.slice(separator + 1), resolvedProjectPath)) {
+        return Number(pidText);
+      }
+    }
+    return null;
+  }
+
+  return null;
+}
+
+/**
+ * Focus the running instance that already has this project open. Returns
+ * "switched" on success, "missing" when the process exited in the meantime
+ * (caller launches fresh), or "failed" when it is running but cannot be
+ * focused (caller reports without duplicating).
+ */
+async function focusExistingInstance(
+  app: string,
+  bundleId: string | null,
+  pid: number,
+  platform: NodeJS.Platform,
+): Promise<{ status: "switched" | "missing" | "failed"; message: string }> {
+  if (platform === "darwin") {
+    // `open -a/-b` without `-n` activates the running instance — but it would
+    // also LAUNCH a bare instance (no project args) if the process were gone,
+    // so confirm liveness first.
+    if (!(await processAlive(pid))) return { status: "missing", message: "进程已退出" };
+    const result = await runExecFile("open", bundleId ? ["-b", bundleId] : ["-a", app]);
+    return result.ok
+      ? { status: "switched", message: "" }
+      : { status: "failed", message: result.message };
+  }
+  if (platform === "linux") {
+    if (!(await processAlive(pid))) return { status: "missing", message: "进程已退出" };
+    const result = await runExecFile("wmctrl", ["-a", app]);
+    return result.ok
+      ? { status: "switched", message: "" }
+      : { status: "failed", message: result.message };
+  }
+  if (platform === "win32") {
+    // WScript.Shell.AppActivate raises the process's window by pid; the exit
+    // code reflects whether it succeeded.
+    const result = await runExecFile("powershell", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `$ok = (New-Object -ComObject WScript.Shell).AppActivate(${pid}); if ($ok) { exit 0 } else { exit 1 }`,
+    ]);
+    return result.ok
+      ? { status: "switched", message: "" }
+      : { status: "failed", message: result.message };
+  }
+  return { status: "failed", message: "当前平台不支持聚焦" };
+}
+
 export async function handleOpenApp(
   input: RpcInput<typeof openAppRpc>,
   _context: PluginHandlerContext,
@@ -151,6 +354,43 @@ export async function handleOpenApp(
       extraArgs,
     )}`,
   );
+
+  // A configured project path gives an instance a project identity: it is
+  // launched with `--path <resolved>` and each editor instance keeps that in
+  // its argv for its whole lifetime. So we can tell whether the SAME project is
+  // already open (as opposed to *any* instance of the app) and switch to it
+  // instead of spawning a duplicate editor.
+  if (resolvedProjectPath) {
+    const existingPid = await findExistingInstanceForProject(
+      app,
+      bundleId,
+      resolvedProjectPath,
+      platform,
+    );
+    if (existingPid !== null) {
+      const switched = await focusExistingInstance(app, bundleId, existingPid, platform);
+      if (switched.status === "switched") {
+        console.log(
+          `${LOG_PREFIX} open-app: switched to existing instance pid=${existingPid} project=${resolvedProjectPath}`,
+        );
+        return { ok: true, message: `已切换到 ${app}${targetSuffix}` };
+      }
+      if (switched.status === "failed") {
+        console.error(
+          `${LOG_PREFIX} open-app: focus failed pid=${existingPid} project=${resolvedProjectPath} — ${switched.message}`,
+        );
+        return {
+          ok: false,
+          message: `已打开，但无法聚焦 ${app}${targetSuffix}：${switched.message}`,
+        };
+      }
+      // status === "missing": the instance exited between detection and focus;
+      // fall through and launch it fresh.
+      console.log(
+        `${LOG_PREFIX} open-app: existing instance vanished pid=${existingPid}; launching`,
+      );
+    }
+  }
 
   if (platform === "darwin") {
     // `open -a <app>` / `open -b <bundleId>` launches the app if it is not
@@ -185,8 +425,9 @@ export async function handleOpenApp(
 
   // Linux best effort: without launch args, focus if running (wmctrl), else
   // launch (gtk-launch, falling back to xdg-open). Focus depends on a running
-  // X/Wayland compositor and cannot target a specific project, so when a project
-  // path is configured we always launch instead.
+  // X/Wayland compositor and cannot target a specific project; the same-project
+  // switch above is what makes a configured project path focus the right
+  // instance instead of launching a duplicate.
   if (extraArgs.length === 0) {
     const focus = await runExecFile("wmctrl", ["-a", app]);
     if (focus.ok) {

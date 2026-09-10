@@ -56,10 +56,12 @@ paseo plugin reload paseo-topbar-command
   "buttons": [
     {
       "type": "app",
-      "id": "godot",
-      "label": "Godot",
+      "id": "godot-editor",
+      "label": "Godot: open",
       "app": "Godot",
-      "bundleId": "org.godotengine.Godot"
+      "bundleId": "org.godotengine.Godot",
+      "projectPath": "godot",
+      "args": ["--editor"]
     },
     {
       "type": "script",
@@ -82,9 +84,18 @@ paseo plugin reload paseo-topbar-command
 | `label` | 是 | 按钮显示名 |
 | `app` | 是 | 应用名。macOS 上用 `open -a <app>`（例如 `Godot`）；Windows 用 `start` |
 | `bundleId` | 否 | macOS bundle id（如 `org.godotengine.Godot`）。存在时优先用 `open -b`，聚焦已运行实例最可靠 |
+| `projectPath` | 否 | 传给应用的工程路径（Godot → `--path <路径>`）。相对路径基于项目根目录解析，`.` 表示项目根目录本身 |
+| `args` | 否 | 追加在工程路径之后的启动参数，如 `["--editor"]` |
 
 macOS 下 `open -a/-b` 的语义正是「打开，若已打开则切换到它」。Linux 为尽力而为：
 优先 `wmctrl -a` 聚焦，失败则 `gtk-launch` / `xdg-open` 启动。
+
+**同一个项目才切换。** 当配置了 `projectPath` 时，插件不会只看「应用是否在运行」——
+应用启动时带的是 `--path <解析后的路径>`，这个参数会留在进程 argv 里（每个 Godot
+编辑器实例终身绑定一个项目），所以能精确判断「这个项目是否已经开着」：
+
+- 已开着**同一个项目**的实例 → 直接切换到它，不再新开编辑器；
+- 开着的是**别的项目**（或根本没开）→ 才新开一个实例加载本项目，避免抢走别的项目的编辑器。
 
 ### script 按钮
 

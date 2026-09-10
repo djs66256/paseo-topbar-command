@@ -3,6 +3,7 @@
 //
 // Run with: npm test
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { rm } from "node:fs/promises";
 import os from "node:os";
@@ -20,11 +21,14 @@ import {
 } from "../server/usage";
 import {
   buildLaunchArgs,
+  commandLineOpensProject,
+  findExistingInstanceForProject,
   handleLoadConfig,
   handleOpenApp,
   handleRunScriptPoll,
   handleRunScriptStart,
   handleRunScriptStop,
+  procArgvOpensProject,
   stopAllScripts,
 } from "../server/commands";
 
@@ -548,6 +552,74 @@ async function main(): Promise<void> {
     });
     assert.equal(resolvedProjectPath, null);
     assert.deepEqual(extraArgs, []);
+  });
+
+  // -------------------------------------------------------------------------
+  console.log("\napp open: same-project instance detection");
+  // -------------------------------------------------------------------------
+
+  await test("commandLineOpensProject matches the --path pair token-segment-wise", () => {
+    assert.equal(commandLineOpensProject("Godot --path /a/b/c --editor", "/a/b/c"), true);
+    // A path containing spaces: `ps` joins it into several tokens.
+    assert.equal(
+      commandLineOpensProject("Godot --path /a/b/My Game --editor", "/a/b/My Game"),
+      true,
+    );
+    // macOS `ps` renders NUL separators as the literal text `\012`.
+    assert.equal(
+      commandLineOpensProject("yes --path\\012/a/b/My Game --editor PATH=/usr/bin", "/a/b/My Game"),
+      true,
+    );
+    // Flags may precede `--path`; single-dash flags may follow it.
+    assert.equal(commandLineOpensProject("Godot --editor --path /a/b/c -e", "/a/b/c"), true);
+    // The resolved path is always absolute, so a flag merely *starting* with
+    // --path cannot be confused.
+    assert.equal(commandLineOpensProject("Godot --path-value /a/b/c --editor", "/a/b/c"), false);
+  });
+
+  await test("commandLineOpensProject rejects a different project", () => {
+    // Longer paths that merely start with ours (no substring false positive).
+    assert.equal(commandLineOpensProject("Godot --path /a/b/c2 --editor", "/a/b/c"), false);
+    assert.equal(commandLineOpensProject("Godot --path /a/b/c/sub --editor", "/a/b/c"), false);
+    assert.equal(commandLineOpensProject("Godot --path /a/b/my-game2 --editor", "/a/b/my-game"), false);
+    // No --path flag at all.
+    assert.equal(commandLineOpensProject("Godot --editor /a/b/c", "/a/b/c"), false);
+  });
+
+  await test("procArgvOpensProject matches exact argv tokens (Linux)", () => {
+    const argv = ["/usr/bin/godot", "--editor", "--path", "/a/b/My Game", "-e"];
+    assert.equal(procArgvOpensProject(argv, "/a/b/My Game"), true);
+    assert.equal(procArgvOpensProject(argv, "/a/b/My"), false);
+    assert.equal(procArgvOpensProject(["/usr/bin/godot", "--editor", "/a/b/c"], "/a/b/c"), false);
+  });
+
+  await test("live: an instance launched with --path is detected as the same project", async () => {
+    if (process.platform !== "darwin" && process.platform !== "linux") {
+      console.log("       (skipped: needs a POSIX process list)");
+      return;
+    }
+    // `yes` ignores its arguments and runs forever; stand in for the editor.
+    const child = spawn("yes", ["--path", realTmpRoot, "--editor"], { stdio: "ignore" });
+    try {
+      // Give the process a moment to appear in the process list.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const pid = await findExistingInstanceForProject(
+        "yes",
+        null,
+        realTmpRoot,
+        process.platform,
+      );
+      assert.equal(pid, child.pid);
+      const other = await findExistingInstanceForProject(
+        "yes",
+        null,
+        path.join(realTmpRoot, "other"),
+        process.platform,
+      );
+      assert.equal(other, null);
+    } finally {
+      child.kill();
+    }
   });
 
   await test("bad bundle id fails cleanly without launching anything", async () => {

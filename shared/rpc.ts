@@ -27,7 +27,10 @@ export const loadConfigRpc = defineRpc({
  * Linux: wmctrl/gtk-launch/xdg-open best effort).
  *
  * When `projectPath` is set the app is launched against that project (Godot:
- * `--path <resolved>`); relative paths resolve against `projectRoot`.
+ * `--path <resolved>`); relative paths resolve against `projectRoot`. The
+ * daemon then first checks whether an instance with THIS project is already
+ * open (its argv carries `--path <resolved>`) and switches to it instead of
+ * spawning a duplicate editor.
  */
 export const openAppRpc = defineRpc({
   name: "paseo-topbar-command.open-app",
