@@ -21,6 +21,18 @@ export const appButtonSchema = z.object({
    * reliable way to focus an already-running instance.
    */
   bundleId: z.string().optional(),
+  /**
+   * Optional project path passed to the app on launch.
+   * For Godot this becomes `--path <resolved>`, i.e. "open this project".
+   * Relative paths resolve against the Paseo project root, so `.` means the
+   * workspace/project root itself and `game/` means `<root>/game`.
+   */
+  projectPath: z.string().optional(),
+  /**
+   * Optional extra launch arguments appended after the project path.
+   * E.g. `["--editor"]` or `["--headless", "-e"]`.
+   */
+  args: z.array(z.string()).optional(),
 });
 
 /** A button that runs a free-form shell command in the project directory. */

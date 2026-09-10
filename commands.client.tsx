@@ -29,7 +29,13 @@ interface LoadedConfig {
 
 const SAMPLE_CONFIG = `{
   "buttons": [
-    { "type": "app", "id": "godot", "label": "Godot", "app": "Godot" },
+    {
+      "type": "app",
+      "id": "godot",
+      "label": "Godot",
+      "app": "Godot",
+      "projectPath": "."
+    },
     {
       "type": "script",
       "id": "export",
@@ -149,7 +155,13 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
   async function handleRunApp(button: AppButton) {
     setRunStates((prev) => ({ ...prev, [button.id]: { status: "opening" } }));
     try {
-      const result = await openApp({ app: button.app, bundleId: button.bundleId ?? null });
+      const result = await openApp({
+        app: button.app,
+        bundleId: button.bundleId ?? null,
+        projectRoot,
+        projectPath: button.projectPath ?? "",
+        args: button.args ?? [],
+      });
       setRunStates((prev) => ({
         ...prev,
         [button.id]: { status: "finished", ok: result.ok, detail: result.message, output: [] },
@@ -341,7 +353,10 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
                   <View style={styles.row}>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.label}>{button.label}</Text>
-                      <Text style={styles.labelMuted}>打开应用 · {button.app}</Text>
+                      <Text style={styles.labelMuted}>
+                        打开应用 · {button.app}
+                        {button.projectPath ? ` · 项目 ${button.projectPath}` : ""}
+                      </Text>
                     </View>
                     {state.status === "opening" ? (
                       <ActivityIndicator size="small" color={theme.colors.accent} />

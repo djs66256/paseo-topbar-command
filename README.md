@@ -42,7 +42,8 @@ paseo plugin reload paseo-topbar-command
       "id": "godot",
       "label": "Godot",
       "app": "Godot",
-      "bundleId": "org.godotengine.Godot"
+      "bundleId": "org.godotengine.Godot",
+      "projectPath": "."
     },
     {
       "type": "script",
@@ -65,9 +66,31 @@ paseo plugin reload paseo-topbar-command
 | `label` | 是 | 按钮显示名 |
 | `app` | 是 | 应用名。macOS 上用 `open -a <app>`（例如 `Godot`）；Windows 用 `start` |
 | `bundleId` | 否 | macOS bundle id（如 `org.godotengine.Godot`）。存在时优先用 `open -b`，聚焦已运行实例最可靠 |
+| `projectPath` | 否 | 要打开的项目路径。配置后启动时带上（Godot 为 `--path <解析后路径>`）。相对路径相对项目根目录解析：`.` 即项目根本身，`game` 即 `<项目根>/game` |
+| `args` | 否 | 附加启动参数，追加在 `projectPath` 之后。例如 `["--editor"]`、`["--headless", "-e"]` |
 
 macOS 下 `open -a/-b` 的语义正是「打开，若已打开则切换到它」。Linux 为尽力而为：
 优先 `wmctrl -a` 聚焦，失败则 `gtk-launch` / `xdg-open` 启动。
+
+配置 `projectPath` 后行为略有不同：因为已运行的实例会忽略 `--args`，macOS 上会加 `-n`
+强制新实例，保证按指定项目打开（可同时开多个项目窗口）。未配置时保持原有的「打开/切换」语义。
+
+最简用法（当前仓库本身就是 Godot 项目）：
+
+```json
+{
+  "buttons": [
+    {
+      "type": "app",
+      "id": "godot",
+      "label": "Godot",
+      "app": "Godot",
+      "bundleId": "org.godotengine.Godot",
+      "projectPath": "."
+    }
+  ]
+}
+```
 
 ### script 按钮
 

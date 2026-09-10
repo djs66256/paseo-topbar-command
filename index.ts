@@ -56,6 +56,7 @@ export default function contribute(plugin: PluginContext) {
     // out of index.ts. The typeof guard keeps the client cleanup a safe no-op while
     // the daemon bundle actually terminates any running script jobs.
     if (typeof stopAllScripts === "function") {
+      console.log("[paseo-topbar-command] plugin cleanup: unloading, stopping scripts");
       stopAllScripts();
     }
   };

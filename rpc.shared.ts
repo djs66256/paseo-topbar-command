@@ -19,12 +19,21 @@ export const loadConfigRpc = defineRpc({
  * Open a desktop app, switching to it if it is already running.
  * Runs on the daemon machine (macOS: `open -a/-b`, Windows: `start`,
  * Linux: wmctrl/gtk-launch/xdg-open best effort).
+ *
+ * When `projectPath` is set the app is launched against that project (Godot:
+ * `--path <resolved>`); relative paths resolve against `projectRoot`.
  */
 export const openAppRpc = defineRpc({
   name: "paseo-topbar-command.open-app",
   input: z.object({
     app: z.string().min(1),
     bundleId: z.string().nullable(),
+    /** Paseo project root, used to resolve a relative `projectPath`. */
+    projectRoot: z.string(),
+    /** Relative-to-root or absolute project path; empty string means none. */
+    projectPath: z.string(),
+    /** Extra launch args appended after the project path. */
+    args: z.array(z.string()),
   }),
   output: z.object({ ok: z.boolean(), message: z.string() }),
 });

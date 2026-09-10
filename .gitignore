@@ -6,6 +6,7 @@ dist/
 build/
 out/
 *.tsbuildinfo
+.test-dist/
 
 # Logs
 *.log

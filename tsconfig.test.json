@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": ".test-dist",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "target": "ES2020",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": [
+    "test/**/*.ts",
+    "commands.server.ts",
+    "config.shared.ts",
+    "paseo-plugin.d.ts"
+  ]
+}
