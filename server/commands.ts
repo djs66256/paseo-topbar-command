@@ -26,15 +26,24 @@ export async function handleLoadConfig(
   let text: string;
   try {
     text = await readFile(configPath, "utf8");
-  } catch {
+  } catch (error) {
+    // No @types/node dependency here: read the errno code structurally.
+    const code =
+      typeof error === "object" && error !== null && "code" in error
+        ? (error as { code?: unknown }).code
+        : undefined;
+    const missing = code === "ENOENT";
     return {
       buttons: [],
       source: configPath,
-      error: `未找到配置文件：${configPath}（在项目根目录创建 paseo.json 即可配置按钮）`,
+      exists: !missing,
+      error: missing
+        ? `未找到配置文件：${configPath}（在项目根目录创建 paseo.json 即可配置按钮）`
+        : `读取配置失败：${error instanceof Error ? error.message : String(error)}`,
     };
   }
   const { buttons, error } = parseConfigText(text);
-  return { buttons, source: configPath, error };
+  return { buttons, source: configPath, exists: true, error };
 }
 
 // ---------------------------------------------------------------------------

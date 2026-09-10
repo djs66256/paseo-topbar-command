@@ -1,0 +1,25 @@
+{
+  "buttons": [
+    {
+      "type": "script",
+      "id": "typecheck",
+      "label": "类型检查",
+      "command": "pnpm typecheck",
+      "description": "tsc --noEmit"
+    },
+    {
+      "type": "script",
+      "id": "reload",
+      "label": "重载插件",
+      "command": "paseo plugin reload paseo-topbar-command",
+      "description": "paseo plugin reload"
+    },
+    {
+      "type": "app",
+      "id": "paseo-app",
+      "label": "Paseo",
+      "app": "Paseo",
+      "bundleId": "sh.paseo.desktop"
+    }
+  ]
+}

@@ -11,6 +11,8 @@ export const loadConfigRpc = defineRpc({
     buttons: z.array(buttonSchema),
     /** Absolute path of the config file actually read. */
     source: z.string(),
+    /** False only when the file does not exist: the client hides its contributions for that project. */
+    exists: z.boolean(),
     error: z.string().nullable(),
   }),
 });

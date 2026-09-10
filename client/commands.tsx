@@ -1,29 +1,20 @@
 // Client panel UI. This file compiles only into the app bundle; no Node APIs here.
-// Theme tokens are the Paseo 0.8 PluginTheme colors; this panel uses surface0,
-// foreground, foregroundMuted, accent and statusDanger.
-import { useEffect, useMemo, useRef, useState } from "react";
+// Run state lives in ./run-store so the header button, its popover and this panel
+// always agree.
+import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { useRpc, useWorkspace } from "@getpaseo/plugin/client";
 import type { AppButton, ButtonConfig, ScriptButton } from "../shared/config";
-import {
-  loadConfigRpc,
-  openAppRpc,
-  runScriptPollRpc,
-  runScriptStartRpc,
-  runScriptStopRpc,
-} from "../shared/rpc";
-
-type ButtonRunState =
-  | { status: "idle" }
-  | { status: "opening" }
-  | { status: "starting" }
-  | { status: "running"; jobId: string; startedAt: string; output: string[] }
-  | { status: "finished"; ok: boolean; detail: string; output: string[] };
+import { loadConfigRpc } from "../shared/rpc";
+import { elapsedLabel } from "./format";
+import { refreshWorkspaceMenu } from "./refresh-bus";
+import { runStore, useWorkspaceRuns } from "./run-store";
 
 interface LoadedConfig {
   buttons: ButtonConfig[];
   source: string;
+  exists: boolean;
   error: string | null;
 }
 
@@ -39,18 +30,6 @@ const SAMPLE_CONFIG = `{
   ]
 }`;
 
-function formatElapsed(startedAtIso: string, now: number): string {
-  const start = new Date(startedAtIso).getTime();
-  if (Number.isNaN(start)) return "";
-  const seconds = Math.max(0, Math.round((now - start) / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m${seconds % 60}s`;
-}
-
-function isScriptButton(button: ButtonConfig): button is ScriptButton {
-  return button.type === "script";
-}
-
 function isAppButton(button: ButtonConfig): button is AppButton {
   return button.type === "app";
 }
@@ -58,28 +37,20 @@ function isAppButton(button: ButtonConfig): button is AppButton {
 export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePanelProps) {
   const workspace = useWorkspace(workspaceId, (w) => ({
     root: w.projectRootPath,
-    directory: w.directory,
     name: w.name,
   }));
-  const projectRoot = workspace?.root || workspace?.directory || "";
+  const projectRoot = workspace?.root ?? "";
+  const runs = useWorkspaceRuns(workspaceId);
 
   const loadConfig = useRpc(loadConfigRpc);
-  const openApp = useRpc(openAppRpc);
-  const startScript = useRpc(runScriptStartRpc);
-  const pollScript = useRpc(runScriptPollRpc);
-  const stopScript = useRpc(runScriptStopRpc);
 
   const [config, setConfig] = useState<LoadedConfig | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
-  const [runStates, setRunStates] = useState<Record<string, ButtonRunState>>({});
-
-  const runStatesRef = useRef(runStates);
-  runStatesRef.current = runStates;
 
   // Load paseo.json whenever the project root (or manual reload) changes.
   useEffect(() => {
     if (!projectRoot) {
-      setConfig({ buttons: [], source: "", error: "无法解析项目根目录" });
+      setConfig({ buttons: [], source: "", exists: false, error: "无法解析项目根目录" });
       return;
     }
     let cancelled = false;
@@ -93,6 +64,7 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
           setConfig({
             buttons: [],
             source: `${projectRoot}/paseo.json`,
+            exists: true,
             error: `读取配置失败：${String(error)}`,
           });
         }
@@ -103,121 +75,10 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
     // loadConfig is a stable useCallback from useRpc; projectRoot + reloadTick drive reloads.
   }, [projectRoot, reloadTick]);
 
-  // Poll every running script job.
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const running = Object.entries(runStatesRef.current).filter(
-        (entry): entry is [string, Extract<ButtonRunState, { status: "running" }>] =>
-          entry[1].status === "running",
-      );
-      if (running.length === 0) return;
-      void Promise.all(
-        running.map(async ([id, state]) => {
-          try {
-            const result = await pollScript({ jobId: state.jobId });
-            setRunStates((prev) => {
-              const current = prev[id];
-              if (!current || current.status !== "running" || current.jobId !== state.jobId) {
-                return prev;
-              }
-              if (result.status === "running") {
-                return {
-                  ...prev,
-                  [id]: {
-                    status: "running",
-                    jobId: state.jobId,
-                    startedAt: result.startedAt ?? current.startedAt,
-                    output: result.output,
-                  },
-                };
-              }
-              const ok = result.status === "succeeded";
-              const detail = ok
-                ? `完成 · 用时 ${formatElapsed(result.startedAt ?? current.startedAt, Date.now())}`
-                : `失败 · 退出码 ${result.exitCode ?? "被终止"}`;
-              return { ...prev, [id]: { status: "finished", ok, detail, output: result.output } };
-            });
-          } catch {
-            // Transient RPC failure; keep polling on the next tick.
-          }
-        }),
-      );
-    }, 700);
-    return () => clearInterval(timer);
-  }, [pollScript]);
-
-  async function handleRunApp(button: AppButton) {
-    setRunStates((prev) => ({ ...prev, [button.id]: { status: "opening" } }));
-    try {
-      const result = await openApp({ app: button.app, bundleId: button.bundleId ?? null });
-      setRunStates((prev) => ({
-        ...prev,
-        [button.id]: { status: "finished", ok: result.ok, detail: result.message, output: [] },
-      }));
-    } catch (error) {
-      setRunStates((prev) => ({
-        ...prev,
-        [button.id]: { status: "finished", ok: false, detail: String(error), output: [] },
-      }));
-    }
-  }
-
-  async function handleStartScript(button: ScriptButton) {
-    setRunStates((prev) => ({ ...prev, [button.id]: { status: "starting" } }));
-    try {
-      const result = await startScript({
-        jobId: button.id,
-        command: button.command,
-        projectRoot,
-        cwd: button.cwd ?? "",
-      });
-      if (!result.ok) {
-        setRunStates((prev) => ({
-          ...prev,
-          [button.id]: { status: "finished", ok: false, detail: result.error ?? "启动失败", output: [] },
-        }));
-        return;
-      }
-      setRunStates((prev) => ({
-        ...prev,
-        [button.id]: { status: "running", jobId: button.id, startedAt: new Date().toISOString(), output: [] },
-      }));
-    } catch (error) {
-      setRunStates((prev) => ({
-        ...prev,
-        [button.id]: { status: "finished", ok: false, detail: String(error), output: [] },
-      }));
-    }
-  }
-
-  async function handleStopScript(button: ScriptButton) {
-    const state = runStatesRef.current[button.id];
-    if (!state) return;
-    if (state.status === "starting") {
-      setRunStates((prev) => ({
-        ...prev,
-        [button.id]: { status: "finished", ok: false, detail: "已取消", output: [] },
-      }));
-      return;
-    }
-    if (state.status !== "running") return;
-    try {
-      await stopScript({ jobId: state.jobId });
-    } catch {
-      // Ignore stop failures; the next poll will settle the state.
-    }
-    setRunStates((prev) => {
-      const current = prev[button.id];
-      return {
-        ...prev,
-        [button.id]: {
-          status: "finished",
-          ok: false,
-          detail: "已停止",
-          output: current && current.status === "running" ? current.output : [],
-        },
-      };
-    });
+  function reload() {
+    // Keep the header button's menu in sync with the panel.
+    refreshWorkspaceMenu(workspaceId);
+    setReloadTick((tick) => tick + 1);
   }
 
   const styles = useMemo(() => {
@@ -233,14 +94,13 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
       headerSub: { color: theme.colors.foregroundMuted, fontSize: 13, marginTop: 4 },
       divider: {
         height: 1,
-        backgroundColor: theme.colors.foregroundMuted,
-        opacity: 0.25,
+        backgroundColor: theme.colors.border,
         marginVertical: compact ? 8 : 10,
       },
       card: {
-        backgroundColor: theme.colors.surface0,
+        backgroundColor: theme.colors.surface1,
         borderWidth: 1,
-        borderColor: theme.colors.foregroundMuted,
+        borderColor: theme.colors.border,
         borderRadius: 10,
         padding: compact ? 12 : 14,
         gap: 8,
@@ -253,26 +113,26 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
       label: { color: theme.colors.foreground, fontSize: compact ? 15 : 16, fontWeight: "500" as const },
       labelMuted: { color: theme.colors.foregroundMuted, fontSize: 12, marginTop: 2 },
       statusText: { color: theme.colors.foregroundMuted, fontSize: 13 },
-      okText: { color: theme.colors.accent, fontSize: 13, fontWeight: "600" as const },
+      okText: { color: theme.colors.statusSuccess, fontSize: 13, fontWeight: "600" as const },
       errText: { color: theme.colors.statusDanger, fontSize: 13, fontWeight: "600" as const },
       output: {
         color: theme.colors.foregroundMuted,
         fontSize: 12,
         marginTop: 4,
-        opacity: 0.9,
+        lineHeight: 17,
       },
       reloadBtn: {
         borderWidth: 1,
-        borderColor: theme.colors.foregroundMuted,
+        borderColor: theme.colors.border,
         borderRadius: 6,
         paddingHorizontal: 10,
         paddingVertical: 5,
         alignSelf: "flex-start" as const,
       },
       emptyCard: {
-        backgroundColor: theme.colors.surface0,
+        backgroundColor: theme.colors.surface1,
         borderWidth: 1,
-        borderColor: theme.colors.foregroundMuted,
+        borderColor: theme.colors.border,
         borderRadius: 10,
         padding: compact ? 12 : 16,
         gap: 8,
@@ -280,14 +140,12 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
       sample: {
         color: theme.colors.foregroundMuted,
         fontSize: 12,
-        opacity: 0.9,
         lineHeight: 18,
       },
     };
   }, [theme, layout.compact]);
 
   const buttons = config?.buttons ?? [];
-  const now = Date.now();
 
   return (
     <View style={styles.screen}>
@@ -299,11 +157,7 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
               按钮配置：项目根目录下的 paseo.json{config?.source ? `（${config.source}）` : ""}
             </Text>
           </View>
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => setReloadTick((tick) => tick + 1)}
-            style={styles.reloadBtn}
-          >
+          <Pressable accessibilityRole="button" onPress={reload} style={styles.reloadBtn}>
             <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>重新加载</Text>
           </Pressable>
         </View>
@@ -328,14 +182,14 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
           </View>
         ) : (
           buttons.map((button) => {
-            const state = runStates[button.id] ?? { status: "idle" };
             if (isAppButton(button)) {
+              const app = runs.apps[button.id];
               return (
                 <Pressable
                   key={button.id}
                   accessibilityRole="button"
-                  disabled={state.status === "opening"}
-                  onPress={() => void handleRunApp(button)}
+                  disabled={app?.pending ?? false}
+                  onPress={() => void runStore.runApp(workspaceId, button)}
                   style={({ pressed }) => [styles.card, pressed && { opacity: 0.7 }]}
                 >
                   <View style={styles.row}>
@@ -343,63 +197,63 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
                       <Text style={styles.label}>{button.label}</Text>
                       <Text style={styles.labelMuted}>打开应用 · {button.app}</Text>
                     </View>
-                    {state.status === "opening" ? (
+                    {app?.pending ? (
                       <ActivityIndicator size="small" color={theme.colors.accent} />
-                    ) : state.status === "finished" ? (
-                      <Text style={state.ok ? styles.okText : styles.errText}>
-                        {state.ok ? "✓" : "✕"}
-                      </Text>
+                    ) : app ? (
+                      <Text style={app.ok ? styles.okText : styles.errText}>{app.ok ? "✓" : "✕"}</Text>
                     ) : null}
                   </View>
-                  {state.status === "finished" ? (
-                    <Text style={state.ok ? styles.okText : styles.errText}>{state.detail}</Text>
+                  {app && !app.pending ? (
+                    <Text style={app.ok ? styles.okText : styles.errText}>{app.detail}</Text>
                   ) : null}
                 </Pressable>
               );
             }
 
             // Script button
-            const running = state.status === "running";
-            const starting = state.status === "starting";
-            const outputTail = state.status === "running" || state.status === "finished"
-              ? state.output.slice(-3)
-              : [];
+            const job = runs.jobs.find((entry) => entry.buttonId === button.id);
+            const runningJob = job && job.status === "running" ? job : null;
+            const outputTail = job && job.output.length > 0 ? job.output.slice(-3) : [];
+            const statusLabel = !job
+              ? null
+              : runningJob
+                ? `${elapsedLabel(job.startedAt, null)} 运行中`
+                : job.status === "stopped"
+                  ? "已停止"
+                  : job.status === "succeeded"
+                    ? `完成 · 用时 ${elapsedLabel(job.startedAt, job.finishedAt)}`
+                    : `失败 · 退出码 ${job.exitCode ?? "被终止"}`;
+
             return (
               <View key={button.id} style={styles.card}>
                 <Pressable
                   accessibilityRole="button"
-                  disabled={running || starting}
-                  onPress={() => void handleStartScript(button)}
+                  disabled={runningJob !== null}
+                  onPress={() => void runStore.startScript(workspaceId, projectRoot, button)}
                 >
                   <View style={styles.row}>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.label}>{button.label}</Text>
-                      <Text style={styles.labelMuted}>
-                        {button.description ?? button.command}
-                      </Text>
+                      <Text style={styles.labelMuted}>{button.description ?? button.command}</Text>
                     </View>
-                    {starting ? (
-                      <ActivityIndicator size="small" color={theme.colors.accent} />
-                    ) : running ? (
-                      <Text style={styles.statusText}>
-                        {formatElapsed(state.startedAt, now)} 运行中
-                      </Text>
-                    ) : state.status === "finished" ? (
-                      <Text style={state.ok ? styles.okText : styles.errText}>
-                        {state.ok ? "✓" : "✕"}
+                    {runningJob ? (
+                      <Text style={styles.statusText}>{statusLabel}</Text>
+                    ) : job ? (
+                      <Text style={job.status === "succeeded" ? styles.okText : styles.errText}>
+                        {job.status === "succeeded" ? "✓" : "✕"}
                       </Text>
                     ) : null}
                   </View>
                 </Pressable>
 
-                {running ? (
+                {runningJob ? (
                   <View style={[styles.row, { justifyContent: "space-between" }]}>
                     <Text style={[styles.statusText, { flexShrink: 1 }]} numberOfLines={1}>
-                      {state.output.slice(-1)[0] ?? "执行中…"}
+                      {runningJob.output.slice(-1)[0] ?? "执行中…"}
                     </Text>
                     <Pressable
                       accessibilityRole="button"
-                      onPress={() => void handleStopScript(button)}
+                      onPress={() => void runStore.stopScript(workspaceId, runningJob.jobId)}
                       style={{ paddingHorizontal: 10, paddingVertical: 4 }}
                     >
                       <Text style={{ color: theme.colors.statusDanger, fontSize: 13 }}>停止</Text>
@@ -407,9 +261,11 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
                   </View>
                 ) : null}
 
-                {state.status === "finished" ? (
+                {job && !runningJob ? (
                   <>
-                    <Text style={state.ok ? styles.okText : styles.errText}>{state.detail}</Text>
+                    <Text style={job.status === "succeeded" ? styles.okText : styles.errText}>
+                      {statusLabel}
+                    </Text>
                     {outputTail.length > 0 ? (
                       <Text style={styles.output} numberOfLines={3}>
                         {outputTail.join("\n")}

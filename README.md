@@ -1,18 +1,31 @@
 # paseo-topbar-command
 
-一个 Paseo 插件：为项目提供一个「命令面板」，从项目根目录的 `paseo.json` 读取按钮配置，
-每个按钮对应一种能力：
+一个 Paseo 插件：把每个项目的 `paseo.json` 命令放到 workspace **顶栏按钮**里，
+每个按钮（command）对应一种能力：
 
 1. **打开 / 切换应用**（如 Godot）：已启动则切换到它，未启动则启动。
 2. **执行脚本**：运行任意 shell 命令，实时显示执行状态（运行中 / 成功 / 失败、退出码、输出末尾、耗时），可中途停止。
 
-## 关于「topbar」
+## 顶栏按钮
 
-Paseo **0.8.0** 已经加入 header buttons（`client.addHeaderButton`），但它在注册时就绑定到
-**某一个 workspace**，而本插件的配置是按项目生效的；因此仍使用 API 支持的最接近方案：
-一个 **workspace 面板**，它会出现在 workspace 头部标签栏（与 Agents / Terminal / Files 并列），
-并且是**按项目**的 —— 正好匹配按项目的 `paseo.json` 配置。
-另外注册了一个 Command Center 项（⌘K 搜索 “Open project commands”）快速打开。
+Paseo 0.8 的 `client.addHeaderButton({ id, workspaceId, button })` 在注册时就绑定到
+**某一个 workspace**，所以插件会枚举 daemon 上的 workspace，为**每个存在 `paseo.json` 的项目**
+注册一个顶栏按钮（右上角、内置操作之前）：
+
+- 点击是**菜单**：直接列出该项目 `paseo.json` 里的按钮，Godot 一下打开/切换、导出脚本一下就跑。
+- 菜单底部还有：**运行状态…**（popover，显示运行中/刚结束的任务、耗时、输出末尾，可停止）、
+  **打开 Commands 面板**、**重新加载 paseo.json**。
+- 有脚本在运行时，顶栏图标右上角会加一个**强调色小圆点**，不打开就知道在跑。
+- 项目**没有** `paseo.json` 时不显示按钮（新建文件后在面板里点「重新加载」即可出现）。
+
+另外保留两个贡献点：
+
+- **workspace 面板** `Commands`（与 Agents / Terminal / Files 并列）：完整状态与输出视图。
+- **Command Center 项**（⌘K 搜索 “Open project commands”）：快速打开该面板。
+
+顶栏位置由 host 决定：宽窗口最多放 3 个插件按钮，窄窗口/移动端只放 1 个，多出的收进 workspace 的「更多操作」菜单。
+菜单项的 id 使用配置下标（`run-0`…）而不是用户填的 `id`，因为 Paseo 会校验菜单 id 必须是
+`^[a-z][a-z0-9-]*$` 并在非法时抛错。
 
 ## 安装
 
@@ -30,6 +43,9 @@ paseo plugin ls          # 应显示 running
 pnpm typecheck
 paseo plugin reload paseo-topbar-command
 ```
+
+本仓库根目录自带一个 `paseo.json`（类型检查 / 重载插件 / 打开 Paseo），
+可以直接在这个项目上试顶栏按钮。
 
 ## 配置
 
@@ -82,21 +98,30 @@ macOS 下 `open -a/-b` 的语义正是「打开，若已打开则切换到它」
 | `description` | 否 | 按钮下的说明文字 |
 
 执行时按钮显示「运行中 + 耗时」与实时输出末尾，结束时显示 ✓/✕、退出码、总耗时与输出末尾；
-运行中可点「停止」。
+运行中可点「停止」。面板和顶栏 popover 共用同一份运行状态（`client/run-store.ts`），
+而且脚本任务 id 带上了 workspace 前缀，所以不同项目里同名的 `id` 可以同时跑。
 
 ## 代码结构（Paseo 0.8 runtime entries）
 
 ```
-paseo-plugin.json   清单：插件 id + requirements.paseo (>=0.8.0)
-index.client.tsx    client 入口：注册 workspace 面板、Command Center 项
-index.server.ts     server 入口：注册 RPC handler、卸载时停止脚本任务
-client/commands.tsx 客户端面板 UI（仅 App bundle）
-server/commands.ts  daemon 侧：读配置、聚焦应用、spawn 脚本任务（仅 daemon bundle）
-shared/config.ts    paseo.json 的 Zod schema（两端共享）
-shared/rpc.ts       RPC 契约（两端共享）
+paseo-plugin.json      清单：插件 id + requirements.paseo (>=0.8.0)
+index.client.tsx       client 入口：枚举 workspace、逐个注册顶栏按钮，兼注册面板与 Command Center 项
+index.server.ts        server 入口：注册 RPC handler、卸载时停止脚本任务
+client/header.tsx      顶栏按钮：菜单组装 + 带运行小圆点的图标
+client/status-popover.tsx  菜单里的「运行状态…」popover
+client/run-store.ts    运行状态 store（顶栏/面板共用，单一轮询）
+client/refresh-bus.ts  让面板的「重新加载」也能刷新顶栏菜单
+client/format.ts       耗时格式化
+client/commands.tsx    Commands 面板 UI
+server/commands.ts     daemon 侧：读配置、聚焦应用、spawn 脚本任务（仅 daemon bundle）
+shared/config.ts       paseo.json 的 Zod schema（两端共享）
+shared/rpc.ts          RPC 契约（两端共享）
 ```
 
 > Paseo 0.8 移除了旧的单入口 `index.ts`：`client/`、`server/`、`shared/` 目录即编译边界，
 > client 代码不能 import `server/`（反之亦然），root 下也不允许放代码模块。
 > 类型检查使用 npm 上的 `@getpaseo/plugin`（devDependency，本仓库固定在 0.8.0），
 > 运行时实例由 Paseo 提供，不需要在插件里打包。
+>
+> `load-config` 的返回带一个 `exists` 字段：只有文件真的不存在（ENOENT）才不显示顶栏按钮；
+> JSON 语法错或字段不合法时按钮仍在，菜单里显示一条提示，详情看面板。
