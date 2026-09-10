@@ -1,7 +1,7 @@
 // Plugin entry. Registers the per-project command panel, a Command Center
 // item to open it, and the daemon-side RPC handlers.
 //
-// NOTE ON "TOPBAR": Paseo 0.6.1's plugin API has no topbar/header-button
+// NOTE ON "TOPBAR": Paseo 0.7's plugin API has no topbar/header-button
 // contribution point (it is on the Paseo plugin roadmap; v0.8 adds header
 // buttons). The supported equivalent is a workspace panel: it appears as a
 // tab in the workspace header row, next to Agents / Terminal / Files, and is

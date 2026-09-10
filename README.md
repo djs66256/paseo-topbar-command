@@ -8,11 +8,31 @@
 
 ## 关于「topbar」
 
-Paseo **0.6.1（当前安装版本）** 的插件 API **没有**顶栏按钮的贡献点
+Paseo **0.7（当前安装版本）** 的插件 API **没有**顶栏按钮的贡献点
 （该能力在 Paseo 插件路线图上，v0.8 才加入 header buttons）。
 本插件使用 API 支持的最接近方案：一个 **workspace 面板**，它会出现在 workspace 头部
 标签栏（与 Agents / Terminal / Files 并列），并且是**按项目**的 —— 正好匹配按项目的 `paseo.json` 配置。
 另外注册了一个 Command Center 项（⌘K 搜索 “Open project commands”）快速打开。
+
+### Header buttons（需要 Paseo 0.8）
+
+v0.8 的 `client.addHeaderButton({ id, workspaceId, button })` 可以把按钮放到 workspace
+头部右侧，并支持 `action` / `menu` / `popover` 三种行为（dropdown 里可以放执行状态）。
+但 v0.8 使用**全新的运行时入口**（`index.client.tsx` + `index.server.ts` + `client/` `server/` `shared/`
+目录，并要求 `paseo-plugin.json` 里声明 `requirements.paseo >= 0.8.0`），与当前 0.7 的单入口
+`index.ts` **不兼容**（迁移文档明确说 “Do not keep a compatibility entry”）。
+
+本机当前是 **Paseo 0.7.0**（`paseo --version`），因此本插件仍使用 0.7 的单入口写法。
+等升级到 0.8 beta 后，再按官方 Migration 文档迁移并加 header buttons。
+
+## 详情下拉
+
+每个按钮卡片右侧都有一个 `▸ / ▾` 下拉按钮，与「执行按钮」相互独立：
+
+- 收起时：只显示一行状态（✓/✕、耗时、最近输出）。
+- 展开时：显示完整「执行状态」（状态、退出码/耗时、应用或命令、工作目录、项目路径、附加参数）
+  以及脚本的完整输出末尾（可选中复制，运行中实时刷新）。
+- 展开状态下脚本仍可直接点「停止」。
 
 ## 安装
 
@@ -92,6 +112,44 @@ macOS 下 `open -a/-b` 的语义正是「打开，若已打开则切换到它」
 }
 ```
 
+### Godot 常用按钮（通过 `args` 组合）
+
+`projectPath` 会转成 `--path <项目>`。Godot 的 `--path` **默认是运行项目**（跑场景），
+要打开编辑器需要额外加 `--editor`（`-e`）。用 `args` 可以自由组合出几种常用按钮：
+
+| 功能 | 关键配置 | 最终传给 Godot 的参数 |
+| --- | --- | --- |
+| 打开编辑器 | `projectPath: "godot"`, `args: ["--editor"]` | `--path <项目> --editor` |
+| 运行项目 | `projectPath: "godot"` | `--path <项目>` |
+| 项目管理器 | 不配 `projectPath`，`args: ["--project-manager"]` | `--project-manager` |
+| 导入资源并退出 | `projectPath: "godot"`, `args: ["--import"]` | `--path <项目> --import` |
+
+完整示例（运行 + 编辑器两个按钮）：
+
+```json
+{
+  "buttons": [
+    {
+      "type": "app",
+      "id": "godot",
+      "label": "Godot 运行",
+      "app": "Godot",
+      "bundleId": "org.godotengine.Godot",
+      "projectPath": "godot"
+    },
+    {
+      "type": "app",
+      "id": "godot-editor",
+      "label": "Godot 编辑器",
+      "app": "Godot",
+      "bundleId": "org.godotengine.Godot",
+      "projectPath": "godot",
+      "args": ["--editor"]
+    }
+  ]
+}
+```
+
 ### script 按钮
 
 | 字段 | 必填 | 说明 |
@@ -106,7 +164,7 @@ macOS 下 `open -a/-b` 的语义正是「打开，若已打开则切换到它」
 执行时按钮显示「运行中 + 耗时」与实时输出末尾，结束时显示 ✓/✕、退出码、总耗时与输出末尾；
 运行中可点「停止」。
 
-## 代码结构（Paseo 0.6.1 单入口风格）
+## 代码结构（Paseo 0.7 单入口风格）
 
 ```
 index.ts            入口：注册 workspace 面板、Command Center 项、RPC handler

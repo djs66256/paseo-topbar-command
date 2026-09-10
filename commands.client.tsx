@@ -1,5 +1,5 @@
 // Client panel UI. This file compiles only into the app bundle; no Node APIs here.
-// Theme tokens available in Paseo 0.6.1: surface0, foreground, foregroundMuted,
+// Theme tokens available in Paseo 0.7: surface0, foreground, foregroundMuted,
 // accent, accentForeground, statusDanger. Use only those.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
@@ -53,6 +53,42 @@ function formatElapsed(startedAtIso: string, now: number): string {
   return `${Math.floor(seconds / 60)}m${seconds % 60}s`;
 }
 
+/** Human-readable status shown in a button's expanded details. */
+function describeAppState(state: ButtonRunState, now: number): string {
+  switch (state.status) {
+    case "idle":
+      return "未打开";
+    case "opening":
+      return "打开中…";
+    case "starting":
+      return "启动中…";
+    case "running":
+      return `运行中 · ${formatElapsed(state.startedAt, now)}`;
+    case "finished":
+      return state.ok ? "已打开" : "打开失败";
+    default:
+      return "未知";
+  }
+}
+
+/** Human-readable status shown in a script button's expanded details. */
+function describeScriptState(state: ButtonRunState, now: number): string {
+  switch (state.status) {
+    case "idle":
+      return "未运行";
+    case "opening":
+      return "打开中…";
+    case "starting":
+      return "启动中…";
+    case "running":
+      return `运行中 · 已运行 ${formatElapsed(state.startedAt, now)}`;
+    case "finished":
+      return state.ok ? "执行成功" : "执行失败";
+    default:
+      return "未知";
+  }
+}
+
 function isScriptButton(button: ButtonConfig): button is ScriptButton {
   return button.type === "script";
 }
@@ -78,6 +114,12 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
   const [config, setConfig] = useState<LoadedConfig | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [runStates, setRunStates] = useState<Record<string, ButtonRunState>>({});
+  // Which button cards are expanded to show full status + output details.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  function toggleExpanded(id: string) {
+    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
 
   const runStatesRef = useRef(runStates);
   runStatesRef.current = runStates;
@@ -273,6 +315,38 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
         marginTop: 4,
         opacity: 0.9,
       },
+      chevronBtn: {
+        paddingHorizontal: 8,
+        paddingVertical: 2,
+        borderRadius: 6,
+      },
+      chevron: { color: theme.colors.foregroundMuted, fontSize: 14 },
+      details: {
+        borderTopWidth: 1,
+        borderTopColor: theme.colors.foregroundMuted,
+        marginTop: 2,
+        paddingTop: 8,
+        gap: 6,
+      },
+      detailsTitle: {
+        color: theme.colors.foreground,
+        fontSize: 13,
+        fontWeight: "600" as const,
+      },
+      metaRow: { flexDirection: "row" as const, gap: 8, alignItems: "flex-start" as const },
+      metaLabel: { color: theme.colors.foregroundMuted, fontSize: 12, minWidth: 64 },
+      metaValue: { color: theme.colors.foreground, fontSize: 12, flex: 1 },
+      outputBox: {
+        borderWidth: 1,
+        borderColor: theme.colors.foregroundMuted,
+        borderRadius: 8,
+        padding: 8,
+      },
+      outputFull: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 12,
+        lineHeight: 17,
+      },
       reloadBtn: {
         borderWidth: 1,
         borderColor: theme.colors.foregroundMuted,
@@ -341,23 +415,43 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
         ) : (
           buttons.map((button) => {
             const state = runStates[button.id] ?? { status: "idle" };
+            const isExpanded = expanded[button.id] === true;
+            const metaRow = (label: string, value: string) => (
+              <View key={label} style={styles.metaRow}>
+                <Text style={styles.metaLabel}>{label}</Text>
+                <Text style={styles.metaValue} selectable>
+                  {value}
+                </Text>
+              </View>
+            );
+            const chevron = (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={isExpanded ? "收起详情" : "展开详情"}
+                onPress={() => toggleExpanded(button.id)}
+                style={styles.chevronBtn}
+              >
+                <Text style={styles.chevron}>{isExpanded ? "▾" : "▸"}</Text>
+              </Pressable>
+            );
+
             if (isAppButton(button)) {
               return (
-                <Pressable
-                  key={button.id}
-                  accessibilityRole="button"
-                  disabled={state.status === "opening"}
-                  onPress={() => void handleRunApp(button)}
-                  style={({ pressed }) => [styles.card, pressed && { opacity: 0.7 }]}
-                >
+                <View key={button.id} style={styles.card}>
                   <View style={styles.row}>
-                    <View style={{ flex: 1 }}>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={state.status === "opening"}
+                      onPress={() => void handleRunApp(button)}
+                      style={({ pressed }) => [{ flex: 1 }, pressed && { opacity: 0.7 }]}
+                    >
                       <Text style={styles.label}>{button.label}</Text>
                       <Text style={styles.labelMuted}>
                         打开应用 · {button.app}
                         {button.projectPath ? ` · 项目 ${button.projectPath}` : ""}
+                        {button.args?.length ? ` · ${button.args.join(" ")}` : ""}
                       </Text>
-                    </View>
+                    </Pressable>
                     {state.status === "opening" ? (
                       <ActivityIndicator size="small" color={theme.colors.accent} />
                     ) : state.status === "finished" ? (
@@ -365,49 +459,67 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
                         {state.ok ? "✓" : "✕"}
                       </Text>
                     ) : null}
+                    {chevron}
                   </View>
-                  {state.status === "finished" ? (
+
+                  {!isExpanded && state.status === "finished" ? (
                     <Text style={state.ok ? styles.okText : styles.errText}>{state.detail}</Text>
                   ) : null}
-                </Pressable>
+
+                  {isExpanded ? (
+                    <View style={styles.details}>
+                      <Text style={styles.detailsTitle}>执行状态</Text>
+                      {metaRow("状态", describeAppState(state, now))}
+                      {metaRow("应用", button.app)}
+                      {button.bundleId ? metaRow("Bundle ID", button.bundleId) : null}
+                      {metaRow("项目路径", button.projectPath ?? "（未配置，直接打开/切换应用）")}
+                      {button.args?.length ? metaRow("附加参数", button.args.join(" ")) : null}
+                      {state.status === "finished" ? (
+                        <Text style={state.ok ? styles.okText : styles.errText}>
+                          {state.detail}
+                        </Text>
+                      ) : null}
+                    </View>
+                  ) : null}
+                </View>
               );
             }
 
             // Script button
             const running = state.status === "running";
             const starting = state.status === "starting";
-            const outputTail = state.status === "running" || state.status === "finished"
-              ? state.output.slice(-3)
-              : [];
+            const output =
+              state.status === "running" || state.status === "finished" ? state.output : [];
+            const outputTail = output.slice(-3);
             return (
               <View key={button.id} style={styles.card}>
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={running || starting}
-                  onPress={() => void handleStartScript(button)}
-                >
-                  <View style={styles.row}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.label}>{button.label}</Text>
-                      <Text style={styles.labelMuted}>
-                        {button.description ?? button.command}
-                      </Text>
-                    </View>
-                    {starting ? (
-                      <ActivityIndicator size="small" color={theme.colors.accent} />
-                    ) : running ? (
-                      <Text style={styles.statusText}>
-                        {formatElapsed(state.startedAt, now)} 运行中
-                      </Text>
-                    ) : state.status === "finished" ? (
-                      <Text style={state.ok ? styles.okText : styles.errText}>
-                        {state.ok ? "✓" : "✕"}
-                      </Text>
-                    ) : null}
-                  </View>
-                </Pressable>
+                <View style={styles.row}>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={running || starting}
+                    onPress={() => void handleStartScript(button)}
+                    style={({ pressed }) => [{ flex: 1 }, pressed && { opacity: 0.7 }]}
+                  >
+                    <Text style={styles.label}>{button.label}</Text>
+                    <Text style={styles.labelMuted}>
+                      {button.description ?? button.command}
+                    </Text>
+                  </Pressable>
+                  {starting ? (
+                    <ActivityIndicator size="small" color={theme.colors.accent} />
+                  ) : running ? (
+                    <Text style={styles.statusText}>
+                      {formatElapsed(state.startedAt, now)} 运行中
+                    </Text>
+                  ) : state.status === "finished" ? (
+                    <Text style={state.ok ? styles.okText : styles.errText}>
+                      {state.ok ? "✓" : "✕"}
+                    </Text>
+                  ) : null}
+                  {chevron}
+                </View>
 
-                {running ? (
+                {running && !isExpanded ? (
                   <View style={[styles.row, { justifyContent: "space-between" }]}>
                     <Text style={[styles.statusText, { flexShrink: 1 }]} numberOfLines={1}>
                       {state.output.slice(-1)[0] ?? "执行中…"}
@@ -422,7 +534,7 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
                   </View>
                 ) : null}
 
-                {state.status === "finished" ? (
+                {!isExpanded && state.status === "finished" ? (
                   <>
                     <Text style={state.ok ? styles.okText : styles.errText}>{state.detail}</Text>
                     {outputTail.length > 0 ? (
@@ -431,6 +543,44 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
                       </Text>
                     ) : null}
                   </>
+                ) : null}
+
+                {isExpanded ? (
+                  <View style={styles.details}>
+                    <Text style={styles.detailsTitle}>执行状态</Text>
+                    {metaRow("状态", describeScriptState(state, now))}
+                    {metaRow("命令", button.command)}
+                    {metaRow("工作目录", button.cwd ?? "（项目根目录）")}
+                    {state.status === "finished" ? (
+                      <Text style={state.ok ? styles.okText : styles.errText}>
+                        {state.detail}
+                      </Text>
+                    ) : null}
+
+                    <View style={[styles.row, { justifyContent: "space-between" }]}>
+                      <Text style={styles.metaLabel}>输出（末尾 {output.length} 行）</Text>
+                      {running ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() => void handleStopScript(button)}
+                          style={{ paddingHorizontal: 10, paddingVertical: 2 }}
+                        >
+                          <Text style={{ color: theme.colors.statusDanger, fontSize: 13 }}>
+                            停止
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                    {output.length > 0 ? (
+                      <View style={styles.outputBox}>
+                        <Text style={styles.outputFull} selectable>
+                          {output.join("\n")}
+                        </Text>
+                      </View>
+                    ) : (
+                      <Text style={styles.statusText}>{running ? "执行中…" : "暂无输出"}</Text>
+                    )}
+                  </View>
                 ) : null}
               </View>
             );
