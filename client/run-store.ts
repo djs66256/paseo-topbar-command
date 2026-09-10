@@ -198,7 +198,7 @@ class RunStore {
     });
   }
 
-  async runApp(workspaceId: string, button: AppButton): Promise<void> {
+  async runApp(workspaceId: string, projectRoot: string, button: AppButton): Promise<void> {
     const transport = this.transport;
     if (!transport) return;
 
@@ -210,6 +210,9 @@ class RunStore {
       const result = await transport.openApp({
         app: button.app,
         bundleId: button.bundleId ?? null,
+        projectRoot,
+        projectPath: button.projectPath ?? "",
+        args: button.args ?? [],
       });
       this.apps.set(key, {
         pending: false,

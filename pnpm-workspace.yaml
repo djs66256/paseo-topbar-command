@@ -1,3 +1,5 @@
+allowBuilds:
+  esbuild: set this to true or false
 minimumReleaseAgeExclude:
   - '@getpaseo/plugin@0.8.0'
   - '@getpaseo/protocol@0.8.0'

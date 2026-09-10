@@ -9,6 +9,7 @@
     ],
     "jsx": "react-jsx",
     "strict": true,
+    "resolveJsonModule": true,
     "skipLibCheck": true,
     "noEmit": true,
     "esModuleInterop": true,

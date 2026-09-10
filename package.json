@@ -3,15 +3,22 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx test/plugin.test.ts",
+    "smoke": "node scripts/rpc-smoke.mjs",
+    "check:client": "node scripts/check-client-bundle.mjs",
+    "diagnose": "node scripts/check-client-bundle.mjs && node scripts/rpc-smoke.mjs"
   },
   "devDependencies": {
     "@getpaseo/client": "^0.8.0",
     "@getpaseo/plugin": "0.8.0",
     "@tanstack/react-query": "^5.90.11",
+    "@types/node": "^22.20.1",
     "@types/react": "~19.2.0",
+    "esbuild": "^0.28.2",
     "react": "19.1.0",
     "react-native": "0.81.5",
+    "tsx": "^4.23.13",
     "typescript": "^5.9.3",
     "zod": "^4.4.3"
   }

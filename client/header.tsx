@@ -1,5 +1,5 @@
 // The workspace header button: a menu of the project's paseo.json buttons, plus
-// run status, the full panel, and a config reload.
+// coding-plan usage, run status, the full panel, and a config reload.
 //
 // Registered once per workspace by index.client.tsx (Paseo binds a header button
 // to a single workspace). The icon carries a small accent dot while any script of
@@ -12,9 +12,11 @@ import type {
 } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { View } from "react-native";
-import type { ButtonConfig } from "../shared/config";
+import { DEFAULT_USAGE_REFRESH_MINUTES, type ButtonConfig } from "../shared/config";
 import { runStore, useWorkspaceRuns } from "./run-store";
 import { StatusPopover } from "./status-popover";
+import { usageSummaryLine } from "./usage-format";
+import { usageStore } from "./usage-store";
 
 /** Workspace panel id registered by the client entry; the menu opens it by id. */
 export const COMMANDS_PANEL_ID = "commands";
@@ -85,6 +87,17 @@ export function createHeaderMenu({
     items.push(hintItem("config-empty", "paseo.json 里还没有配置按钮", "CircleSlash"));
   } else {
     config.buttons.forEach((button, index) => {
+      if (button.type === "usage") {
+        // Read-only glance row: live summary, refreshed by the usage store.
+        const entry = usageStore.view(workspaceId, button.id);
+        const summary = entry.loading
+          ? "获取中…"
+          : entry.error
+            ? `失败：${entry.error}`
+            : usageSummaryLine(entry.result);
+        items.push(hintItem(`usage-${index}`, `${button.label} · ${summary}`, "Gauge"));
+        return;
+      }
       items.push({
         kind: "item",
         id: `run-${index}`,
@@ -95,10 +108,25 @@ export function createHeaderMenu({
           // Returning the promise lets Paseo show busy state and surface failures.
           onPress: () =>
             button.type === "app"
-              ? runStore.runApp(workspaceId, button)
+              ? runStore.runApp(workspaceId, projectRoot, button)
               : runStore.startScript(workspaceId, projectRoot, button),
         },
       });
+    });
+  }
+
+  const usageCount = config.buttons.filter((button) => button.type === "usage").length;
+  if (usageCount > 0) {
+    items.push({ kind: "separator", id: "sep-usage" });
+    items.push({
+      kind: "item",
+      id: "refresh-usage",
+      title: "刷新用量",
+      icon: "Gauge",
+      behavior: {
+        kind: "action",
+        onPress: () => usageStore.fetchWorkspace(workspaceId, 0),
+      },
     });
   }
 
