@@ -842,7 +842,8 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
                   <View style={styles.row}>
                     <Pressable
                       accessibilityRole="button"
-                      onPress={() => void loadUsageRef.current(button.id)}
+                      accessibilityLabel={isExpanded ? "收起用量详情" : "展开用量详情"}
+                      onPress={() => toggleExpanded(button.id)}
                       style={({ pressed }) => [{ flex: 1 }, pressed && { opacity: 0.7 }]}
                     >
                       <Text style={styles.label}>{button.label}</Text>
@@ -874,13 +875,20 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
                     {chevron}
                   </View>
 
-                  {entry?.error ? (
-                    <Text style={styles.errText}>{entry.error}</Text>
-                  ) : result ? (
-                    <Text style={styles.statusText}>{usageSummaryLine(result)}</Text>
-                  ) : (
-                    <Text style={styles.statusText}>点击标题或 ↻ 获取用量</Text>
-                  )}
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={isExpanded ? "收起用量详情" : "展开用量详情"}
+                    onPress={() => toggleExpanded(button.id)}
+                    style={({ pressed }) => [pressed && { opacity: 0.7 }]}
+                  >
+                    {entry?.error ? (
+                      <Text style={styles.errText}>{entry.error}</Text>
+                    ) : result ? (
+                      <Text style={styles.statusText}>{usageSummaryLine(result)}</Text>
+                    ) : (
+                      <Text style={styles.statusText}>点击卡片或 ▸ 展开/收起，↻ 刷新用量</Text>
+                    )}
+                  </Pressable>
 
                   {isExpanded ? (
                     <View style={styles.details}>
