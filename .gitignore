@@ -1,0 +1,26 @@
+# Dependencies — Paseo supplies the runtime modules; only dev tooling lives here.
+node_modules/
+
+# Build output (Paseo compiles the plugin itself; this project emits nothing)
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.swo
+
+# Environment / secrets
+.env
+.env.*
