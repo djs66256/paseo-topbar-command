@@ -3,7 +3,7 @@
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useMemo } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
-import { DEFAULT_USAGE_REFRESH_MINUTES, type UsageButton } from "../shared/config";
+import { DEFAULT_USAGE_REFRESH_MINUTES, type UsageButton, type UsageWindow } from "../shared/config";
 import { formatResetCountdown, usageSummaryLine } from "./usage-format";
 import { usageStore, useUsage } from "./usage-store";
 
@@ -19,6 +19,7 @@ export interface UsageCardProps {
       accent: string;
       accentForeground: string;
       statusSuccess: string;
+      statusWarning: string;
       statusDanger: string;
     };
   };
@@ -74,8 +75,46 @@ export function UsageCard({
         fontWeight: "600" as const,
       },
       metaRow: { flexDirection: "row" as const, gap: 8, alignItems: "flex-start" as const },
-      metaLabel: { color: theme.colors.foregroundMuted, fontSize: 12, minWidth: 64 },
-      metaValue: { color: theme.colors.foreground, fontSize: 12, flex: 1 },
+      // Labels are short fixed strings, so they keep their intrinsic width and
+      // never wrap; only the value flexes (wrapping, or truncating when asked).
+      metaLabel: { color: theme.colors.foregroundMuted, fontSize: 12, flexGrow: 0, flexShrink: 0 },
+      metaValue: {
+        color: theme.colors.foreground,
+        fontSize: 12,
+        flexGrow: 1,
+        flexShrink: 1,
+        minWidth: 0,
+        textAlign: "right" as const,
+      },
+      // Window header row: label absorbs the free space, value keeps its intrinsic
+      // width. Avoid the `flex: 0` shorthand — react-native-web turns it into
+      // `flex: 0 1 0%`, which collapses the value to a tiny wrapping column.
+      windowHead: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        justifyContent: "space-between" as const,
+        gap: 8,
+      },
+      windowLabel: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 12,
+        flexGrow: 1,
+        flexShrink: 1,
+        minWidth: 0,
+      },
+      windowValue: {
+        color: theme.colors.foreground,
+        fontSize: 12,
+        flexGrow: 0,
+        flexShrink: 0,
+        textAlign: "right" as const,
+      },
+      resetText: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 12,
+        marginTop: 2,
+        textAlign: "right" as const,
+      },
       barTrack: {
         height: 6,
         borderRadius: 3,
@@ -87,14 +126,42 @@ export function UsageCard({
     [theme, compact],
   );
 
-  const metaRow = (label: string, value: string) => (
+  const metaRow = (label: string, value: string, truncate = false) => (
     <View key={label} style={styles.metaRow}>
-      <Text style={styles.metaLabel}>{label}</Text>
-      <Text style={styles.metaValue} selectable>
+      <Text style={styles.metaLabel} numberOfLines={truncate ? 1 : undefined}>
+        {label}
+      </Text>
+      <Text
+        style={styles.metaValue}
+        selectable
+        numberOfLines={truncate ? 1 : undefined}
+        ellipsizeMode="middle"
+      >
         {value}
       </Text>
     </View>
   );
+
+  /**
+   * The bar tracks consumption, so it grows as quota is spent. Providers that
+   * report absolute units use used/cap; percentage-only ones fall back to the
+   * complement of the remaining percent.
+   */
+  const usedPercentOf = (window: UsageWindow): number | null => {
+    if (window.cap !== null && window.cap > 0 && window.used !== null) {
+      return Math.max(0, Math.min(100, Math.round((window.used / window.cap) * 100)));
+    }
+    if (window.remainingPercent !== null) {
+      return Math.max(0, Math.min(100, Math.round(100 - window.remainingPercent)));
+    }
+    return null;
+  };
+
+  const barColor = (usedPercent: number): string => {
+    if (usedPercent > 90) return theme.colors.statusDanger;
+    if (usedPercent > 70) return theme.colors.statusWarning;
+    return theme.colors.accent;
+  };
 
   return (
     <View style={styles.card}>
@@ -161,48 +228,42 @@ export function UsageCard({
       {expanded ? (
         <View style={styles.details}>
           <Text style={styles.detailsTitle}>用量详情</Text>
-          {(result?.windows ?? []).map((window) => (
-            <View key={window.key} style={{ gap: 4 }}>
-              <View style={styles.row}>
-                <Text style={[styles.metaLabel, { minWidth: 0, flex: 1 }]}>{window.label}</Text>
-                <Text style={styles.metaValue}>
-                  {window.remainingPercent !== null
-                    ? `剩 ${Math.round(window.remainingPercent)}%`
-                    : ""}
-                  {window.cap !== null && window.used !== null
-                    ? ` · ${window.used.toFixed(2)}/${window.cap.toFixed(2)}`
-                    : ""}
-                </Text>
-              </View>
-              {window.remainingPercent !== null ? (
-                <View style={styles.barTrack}>
-                  <View
-                    style={[
-                      styles.barFill,
-                      {
-                        width: `${Math.max(
-                          0,
-                          Math.min(100, Math.round(window.remainingPercent)),
-                        )}%`,
-                        backgroundColor:
-                          window.remainingPercent <= 10
-                            ? theme.colors.statusDanger
-                            : theme.colors.accent,
-                      },
-                    ]}
-                  />
+          {(result?.windows ?? []).map((window) => {
+            const usedPercent = usedPercentOf(window);
+            return (
+              <View key={window.key} style={{ gap: 4 }}>
+                <View style={styles.windowHead}>
+                  <Text style={styles.windowLabel} numberOfLines={1}>
+                    {window.label}
+                  </Text>
+                  <Text style={styles.windowValue} numberOfLines={1}>
+                    {usedPercent !== null ? `已用 ${usedPercent}%` : ""}
+                    {window.cap !== null && window.used !== null
+                      ? ` · ${window.used.toFixed(2)}/${window.cap.toFixed(2)}`
+                      : ""}
+                  </Text>
                 </View>
-              ) : null}
-              {window.resetAt ? (
-                <Text style={styles.labelMuted}>
-                  {formatResetCountdown(window.resetAt, now)}
-                </Text>
-              ) : null}
-            </View>
-          ))}
+                {usedPercent !== null ? (
+                  <View style={styles.barTrack}>
+                    <View
+                      style={[
+                        styles.barFill,
+                        { width: `${usedPercent}%`, backgroundColor: barColor(usedPercent) },
+                      ]}
+                    />
+                  </View>
+                ) : null}
+                {window.resetAt ? (
+                  <Text style={styles.resetText}>
+                    {formatResetCountdown(window.resetAt, now)}
+                  </Text>
+                ) : null}
+              </View>
+            );
+          })}
           {(result?.metrics ?? []).map((metric) => metaRow(metric.label, metric.value))}
           {(result?.details ?? []).map((detail) => metaRow(detail.label, detail.value))}
-          {result?.keySource ? metaRow("Key 来源", result.keySource) : null}
+          {result?.keySource ? metaRow("Key 来源", result.keySource, true) : null}
           {result ? metaRow("更新于", new Date(result.fetchedAt).toLocaleTimeString("zh-CN")) : null}
           {metaRow(
             "自动刷新",
