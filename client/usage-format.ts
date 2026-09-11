@@ -11,6 +11,8 @@ export function usageSummaryLine(result: UsageResult | null): string {
     if (metric.label === "剩余" || metric.label === "已用") parts.push(`${metric.label} ${metric.value}`);
   }
   for (const window of result.windows) {
+    // 月度窗口只在展开的「用量详情」里显示进度条，避免摘要过长、与 已用 指标重复。
+    if (window.key === "monthly") continue;
     if (window.remainingPercent !== null) {
       parts.push(`${window.label} 剩 ${Math.round(window.remainingPercent)}%`);
     } else if (window.cap !== null && window.used !== null) {

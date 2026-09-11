@@ -45,8 +45,12 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Normalize a reset timestamp to epoch milliseconds. */
+/** Normalize a reset timestamp (epoch seconds/ms or ISO string) to epoch milliseconds. */
 function resetAtMs(value: unknown): number | null {
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
   const raw = num(value);
   if (raw === null || raw <= 0) return null;
   return raw >= 1e12 ? Math.round(raw) : Math.round(raw * 1000);
@@ -293,6 +297,30 @@ function parseCommandCodeWindow(
   return { key, label, used, cap, remainingPercent, resetAt: resetAtMs(entry.resetAt) };
 }
 
+/**
+ * CommandCode exposes 5h/weekly limits directly but no monthly window. The
+ * monthly window is derived from the remaining monthly credits plus the credits
+ * consumed in the current billing period, so the card can draw the same progress
+ * bar it draws for 5h/weekly.
+ */
+function buildCommandCodeMonthlyWindow(
+  used: number | null,
+  monthlyRemaining: number,
+  resetAt: number | null,
+): UsageWindow | null {
+  const consumed = used ?? 0;
+  const cap = monthlyRemaining + consumed;
+  if (cap <= 0) return null;
+  return {
+    key: "monthly",
+    label: "月度",
+    used: consumed,
+    cap,
+    remainingPercent: clampPercent(100 * (1 - consumed / cap)),
+    resetAt,
+  };
+}
+
 async function fetchCommandCodeUsage(
   baseUrl: string,
   apiKey: string,
@@ -376,16 +404,35 @@ export function parseCommandCodePayload(input: {
   const free = num(credits.freeCredits) ?? 0;
   const remaining = monthly + purchased + free;
 
+  const summary = isRecord(input.summary) ? input.summary : {};
+  const totalCost = num(summary.totalCost);
+  const totalCount = num(summary.totalCount);
+  const totalTokens = num(summary.totalTokens) ?? num(summary.tokens);
+
+  const subscriptionBody = isRecord(input.subscriptions) ? input.subscriptions : {};
+  const subscription = isRecord(subscriptionBody.data) ? subscriptionBody.data : {};
+  const planId = str(subscription.planId) ?? str(subscription.priceId);
+  const status = str(subscription.status);
+  const plan = planId ? `${planId.replace(/[_-]+/g, " ")}${status ? `（${status}）` : ""}` : null;
+  const periodEnd = str(subscription.currentPeriodEnd) ?? num(subscription.currentPeriodEnd);
+  const periodEndMs = resetAtMs(periodEnd);
+
   const windowLimits = isRecord(creditsBody.windowLimits) ? creditsBody.windowLimits : {};
   const windows = [
     parseCommandCodeWindow(windowLimits.fiveHour, "fiveHour", "5 小时"),
     parseCommandCodeWindow(windowLimits.weekly, "weekly", "每周"),
   ].filter((window): window is UsageWindow => window !== null);
 
-  const summary = isRecord(input.summary) ? input.summary : {};
-  const totalCost = num(summary.totalCost);
-  const totalCount = num(summary.totalCount);
-  const totalTokens = num(summary.totalTokens) ?? num(summary.tokens);
+  // Prefer an explicitly reported monthly limit; otherwise synthesize one from
+  // the monthly credit pool so the detail view still gets a 月度 progress bar.
+  const monthlyWindow =
+    parseCommandCodeWindow(windowLimits.monthly, "monthly", "月度") ??
+    buildCommandCodeMonthlyWindow(
+      num(summary.totalMonthlyCredits) ?? totalCost,
+      monthly,
+      periodEndMs,
+    );
+  if (monthlyWindow) windows.push(monthlyWindow);
 
   if (remaining > 0 || totalCost !== null) {
     metrics.push({ label: "剩余", value: `$${remaining.toFixed(2)}` });
@@ -402,13 +449,6 @@ export function parseCommandCodePayload(input: {
   details.push({ label: "购买额度", value: `$${purchased.toFixed(2)}` });
   details.push({ label: "赠送额度", value: `$${free.toFixed(2)}` });
 
-  const subscriptionBody = isRecord(input.subscriptions) ? input.subscriptions : {};
-  const subscription = isRecord(subscriptionBody.data) ? subscriptionBody.data : {};
-  const planId = str(subscription.planId) ?? str(subscription.priceId);
-  const status = str(subscription.status);
-  const plan = planId ? `${planId.replace(/[_-]+/g, " ")}${status ? `（${status}）` : ""}` : null;
-  const periodEnd = str(subscription.currentPeriodEnd) ?? num(subscription.currentPeriodEnd);
-  const periodEndMs = resetAtMs(periodEnd);
   if (periodEndMs) {
     details.push({ label: "当前周期结束", value: new Date(periodEndMs).toLocaleString("zh-CN") });
   }

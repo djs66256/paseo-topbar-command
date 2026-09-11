@@ -250,14 +250,23 @@ async function main(): Promise<void> {
           weekly: { used: 12.82, cap: 35, resetAt: 1789105156687 },
         },
       },
-      subscriptions: { data: { planId: "price_abc", status: "active" } },
+      subscriptions: {
+        data: { planId: "price_abc", status: "active", currentPeriodEnd: "2026-10-04T05:12:42.000Z" },
+      },
       summary: { totalCount: 3613, totalCost: 12.72, totalTokens: 634504819 },
       account: "djs",
       orgId: null,
     });
-    assert.equal(parsed.windows.length, 2);
+    assert.equal(parsed.windows.length, 3);
     assert.equal(parsed.windows[0].key, "fiveHour");
     assert.ok(parsed.windows[0].remainingPercent !== null && parsed.windows[0].remainingPercent > 90);
+    // Synthesized monthly window: remaining 57.16 + used 12.72 → bar in details.
+    assert.equal(parsed.windows[2].key, "monthly");
+    assert.equal(parsed.windows[2].cap, 69.88);
+    assert.equal(parsed.windows[2].resetAt, Date.parse("2026-10-04T05:12:42.000Z"));
+    assert.ok(
+      parsed.windows[2].remainingPercent !== null && parsed.windows[2].remainingPercent > 80,
+    );
     assert.ok(parsed.metrics.some((metric) => metric.label === "剩余"));
     assert.ok(parsed.metrics.some((metric) => metric.label === "Tokens"));
     assert.ok(parsed.plan && parsed.plan.includes("price abc"));
