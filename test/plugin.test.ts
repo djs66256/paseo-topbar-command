@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { parseConfigText, resolvePanelLocations } from "../shared/config";
+import { usageGlanceLine } from "../client/usage-format";
 import {
   canonicalAuthProvider,
   commandCodeAccountsFrom,
@@ -730,6 +731,64 @@ async function main(): Promise<void> {
   });
 
   // -------------------------------------------------------------------------
+  console.log("\nheader dropdown glance line (usageGlanceLine)");
+  // -------------------------------------------------------------------------
+
+  const glanceResult = (overrides: Record<string, unknown>) =>
+    ({
+      ok: true,
+      provider: "commandcode",
+      fetchedAt: "2024-01-01T00:00:00.000Z",
+      account: "acct",
+      plan: null,
+      keySource: null,
+      isDefault: true,
+      defaultAccount: "acct",
+      windows: [],
+      metrics: [],
+      details: [],
+      error: null,
+      ...overrides,
+    }) as never;
+
+  await test("usageGlanceLine keeps remaining credits + the tightest window", () => {
+    const line = usageGlanceLine(
+      glanceResult({
+        metrics: [
+          { label: "剩余", value: "$12.72" },
+          { label: "已用", value: "$12.72（50%）" },
+          { label: "请求数", value: "3,613" },
+        ],
+        windows: [
+          { key: "fiveHour", label: "5 小时", used: 1, cap: 10, remainingPercent: 80, resetAt: null },
+          { key: "weekly", label: "每周", used: 1, cap: 10, remainingPercent: 63, resetAt: null },
+          { key: "monthly", label: "月度", used: 1, cap: 10, remainingPercent: 5, resetAt: null },
+        ],
+      }),
+    );
+    // 已用 / 请求数 / 月度 are dropped; the tightest non-monthly window wins.
+    assert.equal(line, "剩 $12.72 · 每周 剩 63%");
+  });
+
+  await test("usageGlanceLine falls back to the tightest window without a money metric", () => {
+    const line = usageGlanceLine(
+      glanceResult({
+        provider: "minimax-cn",
+        windows: [
+          { key: "interval", label: "5 小时", used: null, cap: null, remainingPercent: 99, resetAt: null },
+          { key: "weekly", label: "每周", used: null, cap: null, remainingPercent: 90, resetAt: null },
+        ],
+      }),
+    );
+    assert.equal(line, "每周 剩 90%");
+  });
+
+  await test("usageGlanceLine reports missing/failed results plainly", () => {
+    assert.equal(usageGlanceLine(null), "尚未获取");
+    assert.equal(usageGlanceLine(glanceResult({ ok: false, error: "boom" })), "boom");
+  });
+
+  // -------------------------------------------------------------------------
   console.log("\npaseo.json loading (handleLoadConfig)");
   // -------------------------------------------------------------------------
 
@@ -798,6 +857,11 @@ async function main(): Promise<void> {
       );
       // Labels stay as written; the card itself shows which account it is.
       assert.ok(commandCode.every((button) => button.label === "CommandCode"));
+      // The header dropdown needs to know which single row to show pre-fetch.
+      assert.deepEqual(
+        commandCode.map((button) => button.currentAccount),
+        [true, false],
+      );
       // Config edits must target the original button, not the card index.
       assert.equal(commandCode[0].sourceIndex, 0);
       assert.equal(commandCode[1].sourceIndex, 0);

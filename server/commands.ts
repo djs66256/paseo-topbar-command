@@ -125,9 +125,17 @@ async function expandCommandCodeButtons(buttons: ButtonConfig[]): Promise<Button
       continue;
     }
 
-    for (const account of accounts.accounts) {
-      expanded.push({ ...withSource, accountSlot: account.slot });
-    }
+    // Flag the currently active account so the header dropdown can show one row
+    // before any usage fetch has returned; with no canonical auth entry, the
+    // first login stands in for it.
+    const hasDefault = accounts.accounts.some((account) => account.isDefault);
+    accounts.accounts.forEach((account, accountIndex) => {
+      expanded.push({
+        ...withSource,
+        accountSlot: account.slot,
+        currentAccount: account.isDefault || (!hasDefault && accountIndex === 0),
+      });
+    });
   }
 
   return expanded;

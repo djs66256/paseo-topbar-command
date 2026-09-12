@@ -87,6 +87,12 @@ export const usageButtonSchema = z.object({
    */
   accountSlot: z.string().optional(),
   /**
+   * Set by `load-config` on auto-discovered account cards: this account is the
+   * one pi authenticates with. The header dropdown uses it to pick its single
+   * usage row before the first fetch has returned.
+   */
+  currentAccount: z.boolean().optional(),
+  /**
    * Index of this button in the project's paseo.json. Set by `load-config`
    * because one config button can expand into several cards, so the card index
    * is not the config index. Used when writing the button back.

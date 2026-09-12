@@ -1,6 +1,6 @@
 // Pure formatting for usage data, shared by the header menu, the popover and the
 // panel cards. Ported from the pre-0.8 client so the wording stays identical.
-import type { UsageResult } from "../shared/config";
+import type { UsageResult, UsageWindow } from "../shared/config";
 
 /** "剩 $1.23 · 5 小时 剩 80%" style one-line summary. */
 export function usageSummaryLine(result: UsageResult | null): string {
@@ -18,6 +18,38 @@ export function usageSummaryLine(result: UsageResult | null): string {
     } else if (window.cap !== null && window.used !== null) {
       parts.push(`${window.label} ${window.used.toFixed(2)}/${window.cap.toFixed(2)}`);
     }
+  }
+  return parts.join(" · ") || "无数据";
+}
+
+/**
+ * The header dropdown has one narrow row per provider, so show only what answers
+ * "how much can I still use?": remaining credits plus the tightest rate-limit
+ * window. Everything else (plan, totals, per-window bars) lives in the panel.
+ */
+export function usageGlanceLine(result: UsageResult | null): string {
+  if (!result) return "尚未获取";
+  if (!result.ok) return result.error ?? "获取失败";
+
+  const parts: string[] = [];
+  const remaining = result.metrics.find((metric) => metric.label === "剩余");
+  if (remaining) parts.push(`剩 ${remaining.value}`);
+
+  let tightest: UsageWindow | null = null;
+  for (const window of result.windows) {
+    // 月度窗口已在「剩余」里体现，不再重复。
+    if (window.key === "monthly" || window.remainingPercent === null) continue;
+    if (tightest === null || (tightest.remainingPercent ?? 100) > window.remainingPercent) {
+      tightest = window;
+    }
+  }
+  if (tightest?.remainingPercent != null) {
+    parts.push(`${tightest.label} 剩 ${Math.round(tightest.remainingPercent)}%`);
+  }
+
+  if (parts.length === 0) {
+    const used = result.metrics.find((metric) => metric.label === "已用");
+    if (used) parts.push(`已用 ${used.value}`);
   }
   return parts.join(" · ") || "无数据";
 }

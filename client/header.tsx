@@ -12,11 +12,11 @@ import type {
 } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { View } from "react-native";
-import { DEFAULT_USAGE_REFRESH_MINUTES, type ButtonConfig } from "../shared/config";
+import { DEFAULT_USAGE_REFRESH_MINUTES, type ButtonConfig, type UsageButton } from "../shared/config";
 import { runStore, useWorkspaceRuns } from "./run-store";
 import { StatusPopover } from "./status-popover";
-import { usageSummaryLine } from "./usage-format";
-import { usageStore } from "./usage-store";
+import { usageGlanceLine } from "./usage-format";
+import { usageStore, type UsageEntryView } from "./usage-store";
 
 /** Workspace panel id registered by the client entry; the menu opens it by id. */
 export const COMMANDS_PANEL_ID = "commands";
@@ -57,6 +57,22 @@ function hintItem(id: string, title: string, icon: string): PluginButtonMenuEntr
   };
 }
 
+/**
+ * Does this usage card describe the account pi is authenticating with right now?
+ *
+ * The dropdown has room for one usage row per provider, not one per account.
+ * A fetched result is authoritative; before the first fetch we fall back to the
+ * `currentAccount` flag `load-config` puts on auto-discovered account cards.
+ * Cards the user pinned themselves (apiKeyPath / apiKey / apiKeyEnv, or a
+ * non-CommandCode provider) are always relevant.
+ */
+function isCurrentAccountCard(button: UsageButton, entry: UsageEntryView): boolean {
+  if (entry.result?.isDefault === true) return true;
+  if (entry.result?.isDefault === false) return false;
+  if (button.accountSlot !== undefined) return button.currentAccount === true;
+  return true;
+}
+
 export interface HeaderMenuInput {
   client: PluginClientContext;
   workspaceId: string;
@@ -86,29 +102,34 @@ export function createHeaderMenu({
   } else if (config.buttons.length === 0) {
     items.push(hintItem("config-empty", "paseo.json 里还没有配置按钮", "CircleSlash"));
   } else {
+    // The menu shows the active account only, and only its availability.
+    const usageCards = config.buttons
+      .map((button, index) => ({ button, index }))
+      .filter(
+        (card): card is { button: UsageButton; index: number } => card.button.type === "usage",
+      );
+    const current = usageCards.filter((card) =>
+      isCurrentAccountCard(card.button, usageStore.view(workspaceId, String(card.index))),
+    );
+    // Never drop the usage row entirely (e.g. no canonical auth entry, so no
+    // account is flagged as the default).
+    const shown = new Set((current.length > 0 ? current : usageCards.slice(0, 1)).map((c) => c.index));
+
     config.buttons.forEach((button, index) => {
       if (button.type === "usage") {
-        // Read-only glance row: live summary, refreshed by the usage store.
-        // Keyed by card index, since one Config button can expand per account.
+        if (!shown.has(index)) return;
+        // Read-only glance row: the numbers that answer "how much is left?",
+        // refreshed by the usage store. Keyed by card index, since one config
+        // button can expand into one card per account.
         const entry = usageStore.view(workspaceId, String(index));
         const summary = entry.loading
           ? "获取中…"
           : entry.error
             ? `失败：${entry.error}`
-            : usageSummaryLine(entry.result);
-        // Several cards share one label, so name the account and mark the one pi
-        // currently authenticates with.
-        const account = entry.result?.account ?? button.accountSlot ?? null;
-        const marker = entry.result?.isDefault
-          ? `当前账号${entry.result.defaultAccount ? `（${entry.result.defaultAccount}）` : ""} · `
-          : "";
-        items.push(
-          hintItem(
-            `usage-${index}`,
-            `${button.label}${account ? ` · ${account}` : ""} · ${marker}${summary}`,
-            "Gauge",
-          ),
-        );
+            : usageGlanceLine(entry.result);
+        // One row per provider and it is already the active account, so the
+        // account name would just eat the little horizontal space there is.
+        items.push(hintItem(`usage-${index}`, `${button.label} · ${summary}`, "Gauge"));
         return;
       }
       items.push({
