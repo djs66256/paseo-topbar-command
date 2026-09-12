@@ -7,7 +7,8 @@
     "test": "tsx test/plugin.test.ts",
     "smoke": "node scripts/rpc-smoke.mjs",
     "check:client": "node scripts/check-client-bundle.mjs",
-    "diagnose": "node scripts/check-client-bundle.mjs && node scripts/rpc-smoke.mjs"
+    "check:client:hermes": "node scripts/check-client-hermes.mjs",
+    "diagnose": "node scripts/check-client-bundle.mjs && node scripts/check-client-hermes.mjs && node scripts/rpc-smoke.mjs"
   },
   "devDependencies": {
     "@getpaseo/client": "^0.8.0",

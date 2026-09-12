@@ -32,6 +32,8 @@ Paseo 0.8 的 `client.addHeaderButton({ id, workspaceId, button })` 在注册时
 ```bash
 pnpm install
 pnpm typecheck
+pnpm check:client          # bundle 能注册面板 / 顶栏按钮（V8）
+pnpm check:client:hermes   # bundle 在真机引擎 Hermes 里也能跑（见下方「移动端约束」）
 paseo plugin install /绝对路径/paseo-topbar-command
 paseo plugin ls          # 应显示 running
 ```
@@ -41,6 +43,7 @@ paseo plugin ls          # 应显示 running
 
 ```bash
 pnpm typecheck
+pnpm check:client:hermes   # client/ 改过就建议跑一次（iPad 崩溃防线）
 paseo plugin reload paseo-topbar-command
 ```
 
@@ -124,9 +127,14 @@ client/run-store.ts    运行状态 store（顶栏/面板共用，单一轮询�
 client/refresh-bus.ts  让面板的「重新加载」也能刷新顶栏菜单
 client/format.ts       耗时格式化
 client/commands.tsx    Commands 面板 UI
+client/usage-card.tsx  用量卡片 UI
+client/usage-store.ts  用量 store（面板/顶栏共用，单一刷新定时器）
 server/commands.ts     daemon 侧：读配置、聚焦应用、spawn 脚本任务（仅 daemon bundle）
+server/usage.ts        daemon 侧：读取 provider 用量（仅 daemon bundle）
 shared/config.ts       paseo.json 的 Zod schema（两端共享）
 shared/rpc.ts          RPC 契约（两端共享）
+scripts/check-client-bundle.mjs  Node(V8) 侧：bundle 能注册面板/顶栏按钮
+scripts/check-client-hermes.mjs  真机引擎侧：bundle 在 Hermes 里能跑（iPad 崩溃防线）
 ```
 
 > Paseo 0.8 移除了旧的单入口 `index.ts`：`client/`、`server/`、`shared/` 目录即编译边界，
@@ -136,3 +144,33 @@ shared/rpc.ts          RPC 契约（两端共享）
 >
 > `load-config` 的返回带一个 `exists` 字段：只有文件真的不存在（ENOENT）才不显示顶栏按钮；
 > JSON 语法错或字段不合法时按钮仍在，菜单里显示一条提示，详情看面板。
+
+## 移动端（Hermes）约束：client 代码不要用 `class`
+
+Paseo 用 `globalThis.eval(bundle)` 在**客户端引擎**里执行插件 bundle：桌面是 Chromium（V8），
+iPad / iPhone 是 React Native 的 **Hermes**。Hermes 有个会让本插件在 iPad 上必崩的行为：
+
+> 在一个足够大的 eval 函数里，Hermes 会把**每一个 `class` 静默编译成 `undefined`**（不报错），
+> 于是 `var store = new RunStore()` 直接抛
+> `TypeError: Cannot read property 'prototype' of undefined`。
+> 同一个 bundle 在 Node / Chrome / Electron（V8、JSC）里完全正常，所以这是**只在 iPad 上出现**的错。
+> 函数、闭包、对象字面量不受影响（实测往 bundle 里再塞 1 万个顶层声明也照跑）。
+
+因此 `client/` 与 `shared/` 里的代码（以及它们能 import 到的东西）**不要出现 `class`**：
+`client/run-store.ts`、`client/usage-store.ts` 已经改成工厂函数 + 闭包，不要再改回 `class`。
+
+两道检查兜住这个坑：
+
+```bash
+npm run check:client         # V8：bundle 能 eval、能注册面板与顶栏按钮
+npm run check:client:hermes  # Hermes（真机引擎）：bundle 能 eval、contribute() 成功、按钮注册
+npm run diagnose             # 上面两个 + 连 daemon 的 RPC smoke
+```
+
+`check:client:hermes` 用 `node_modules/react-native` 自带的 Hermes 二进制跑真正的
+`eval(bundle)` 流程（含 daemon 的 esbuild 参数、`async-await` 降级、Hermes eager interop 包装），
+是唯一能在 PC 上提前发现 iPad 崩溃的检查；没有该二进制时会自动跳过。
+
+> 上游建议（可选）：daemon 侧 `plugins/compiler.js` 若把 client bundle 的 `class` 也降级掉
+> （或改成 `new Function`/单独模块作用域执行），所有插件都能绕开这个 Hermes 缺陷；
+> 在这之前，插件作者只能在 client 代码里避开 `class`。

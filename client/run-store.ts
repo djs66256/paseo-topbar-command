@@ -4,6 +4,15 @@
 // panel read this store, so a script started from either surface shows up in the
 // other one. One poller serves every workspace; it runs only while a job is
 // actually running.
+//
+// NOTE: this store is deliberately built from a factory + closures instead of a
+// `class`. Paseo evaluates plugin client bundles with `globalThis.eval`, and
+// Hermes (the engine of the iOS/Android app) silently compiles every `class` in a
+// large eval'd function down to `undefined` — a class expression assignment then
+// yields undefined and the first `new X()` throws
+// "TypeError: Cannot read property 'prototype' of undefined" on iPad/iPhone only.
+// Functions, closures and object literals are unaffected, so keep this file
+// class-free.
 import { useSyncExternalStore } from "react";
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import type { AppButton, ScriptButton } from "../shared/config";
@@ -52,6 +61,15 @@ export interface WorkspaceRunsView {
   readonly running: number;
 }
 
+export interface RunStore {
+  subscribe(listener: () => void): () => void;
+  configure(transport: RunsTransport | null): void;
+  view(workspaceId: string): WorkspaceRunsView;
+  startScript(workspaceId: string, projectRoot: string, button: ScriptButton): Promise<void>;
+  stopScript(workspaceId: string, jobId: string): Promise<void>;
+  runApp(workspaceId: string, projectRoot: string, button: AppButton): Promise<void>;
+}
+
 const EMPTY_VIEW: WorkspaceRunsView = { jobs: [], apps: {}, running: 0 };
 const POLL_INTERVAL_MS = 700;
 const KEY_SEPARATOR = "\u0000";
@@ -68,64 +86,70 @@ function keyOf(workspaceId: string, id: string): string {
   return `${workspaceId}${KEY_SEPARATOR}${id}`;
 }
 
-class RunStore {
-  private transport: RunsTransport | null = null;
-  private listeners = new Set<() => void>();
-  private jobs = new Map<string, ScriptJobView>();
-  private apps = new Map<string, AppRunView>();
-  private views = new Map<string, WorkspaceRunsView>();
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private polling = false;
+function createRunStore(): RunStore {
+  let transport: RunsTransport | null = null;
+  const listeners = new Set<() => void>();
+  const jobs = new Map<string, ScriptJobView>();
+  const apps = new Map<string, AppRunView>();
+  const views = new Map<string, WorkspaceRunsView>();
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let polling = false;
 
-  readonly subscribe = (listener: () => void): (() => void) => {
-    this.listeners.add(listener);
+  function subscribe(listener: () => void): () => void {
+    listeners.add(listener);
     return () => {
-      this.listeners.delete(listener);
+      listeners.delete(listener);
     };
-  };
+  }
 
-  configure(transport: RunsTransport | null): void {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
+  function configure(next: RunsTransport | null): void {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
     }
-    this.transport = transport;
-    this.jobs.clear();
-    this.apps.clear();
-    this.views.clear();
-    this.polling = false;
-    this.publish();
+    transport = next;
+    jobs.clear();
+    apps.clear();
+    views.clear();
+    polling = false;
+    publish();
   }
 
   /** Stable per workspace until something actually changes. */
-  view(workspaceId: string): WorkspaceRunsView {
-    const cached = this.views.get(workspaceId);
+  function view(workspaceId: string): WorkspaceRunsView {
+    const cached = views.get(workspaceId);
     if (cached) return cached;
 
     const prefix = `${workspaceId}${KEY_SEPARATOR}`;
-    const jobs: ScriptJobView[] = [];
-    for (const [key, job] of this.jobs) {
-      if (key.startsWith(prefix)) jobs.push(job);
+    const workspaceJobs: ScriptJobView[] = [];
+    for (const [key, job] of jobs) {
+      if (key.startsWith(prefix)) workspaceJobs.push(job);
     }
     const rank = (job: ScriptJobView) => (job.status === "running" ? 0 : 1);
-    jobs.sort((a, b) => rank(a) - rank(b) || (a.startedAt < b.startedAt ? 1 : -1));
+    workspaceJobs.sort((a, b) => rank(a) - rank(b) || (a.startedAt < b.startedAt ? 1 : -1));
 
-    const apps: Record<string, AppRunView> = {};
-    for (const [key, app] of this.apps) {
-      if (key.startsWith(prefix)) apps[key.slice(prefix.length)] = app;
+    const workspaceApps: Record<string, AppRunView> = {};
+    for (const [key, app] of apps) {
+      if (key.startsWith(prefix)) workspaceApps[key.slice(prefix.length)] = app;
     }
 
-    const view: WorkspaceRunsView = {
-      jobs,
-      apps,
-      running: jobs.reduce((count, job) => (job.status === "running" ? count + 1 : count), 0),
+    const next: WorkspaceRunsView = {
+      jobs: workspaceJobs,
+      apps: workspaceApps,
+      running: workspaceJobs.reduce(
+        (count, job) => (job.status === "running" ? count + 1 : count),
+        0,
+      ),
     };
-    this.views.set(workspaceId, view);
-    return view;
+    views.set(workspaceId, next);
+    return next;
   }
 
-  async startScript(workspaceId: string, projectRoot: string, button: ScriptButton): Promise<void> {
-    const transport = this.transport;
+  async function startScript(
+    workspaceId: string,
+    projectRoot: string,
+    button: ScriptButton,
+  ): Promise<void> {
     if (!transport) return;
 
     const jobId = scriptJobId(workspaceId, button.id);
@@ -147,7 +171,7 @@ class RunStore {
         cwd: button.cwd ?? "",
       });
     } catch (error) {
-      this.putJob(workspaceId, jobId, {
+      putJob(workspaceId, jobId, {
         ...base,
         status: "failed",
         finishedAt: startedAt,
@@ -158,7 +182,7 @@ class RunStore {
     }
 
     if (!result.ok) {
-      this.putJob(workspaceId, jobId, {
+      putJob(workspaceId, jobId, {
         ...base,
         status: "failed",
         finishedAt: startedAt,
@@ -168,43 +192,46 @@ class RunStore {
       return;
     }
 
-    this.putJob(workspaceId, jobId, {
+    putJob(workspaceId, jobId, {
       ...base,
       status: "running",
       finishedAt: null,
       exitCode: null,
       output: [],
     });
-    this.ensurePolling();
+    ensurePolling();
   }
 
-  async stopScript(workspaceId: string, jobId: string): Promise<void> {
+  async function stopScript(workspaceId: string, jobId: string): Promise<void> {
     const key = keyOf(workspaceId, jobId);
-    const current = this.jobs.get(key);
+    const current = jobs.get(key);
     if (!current || current.status !== "running") return;
 
     try {
-      await this.transport?.stop({ jobId });
+      await transport?.stop({ jobId });
     } catch {
       // The next poll settles the real state; a failed stop is not fatal here.
     }
 
-    const latest = this.jobs.get(key);
+    const latest = jobs.get(key);
     if (!latest || latest.status !== "running") return;
-    this.putJob(workspaceId, jobId, {
+    putJob(workspaceId, jobId, {
       ...latest,
       status: "stopped",
       finishedAt: new Date().toISOString(),
     });
   }
 
-  async runApp(workspaceId: string, projectRoot: string, button: AppButton): Promise<void> {
-    const transport = this.transport;
+  async function runApp(
+    workspaceId: string,
+    projectRoot: string,
+    button: AppButton,
+  ): Promise<void> {
     if (!transport) return;
 
     const key = keyOf(workspaceId, button.id);
-    this.apps.set(key, { pending: true, ok: false, detail: "正在打开…" });
-    this.publish();
+    apps.set(key, { pending: true, ok: false, detail: "正在打开…" });
+    publish();
 
     try {
       const result = await transport.openApp({
@@ -214,70 +241,70 @@ class RunStore {
         projectPath: button.projectPath ?? "",
         args: button.args ?? [],
       });
-      this.apps.set(key, {
+      apps.set(key, {
         pending: false,
         ok: result.ok,
         detail: result.ok ? result.message || `已打开 ${button.label}` : result.message,
       });
     } catch (error) {
-      this.apps.set(key, { pending: false, ok: false, detail: String(error) });
+      apps.set(key, { pending: false, ok: false, detail: String(error) });
     }
-    this.publish();
+    publish();
   }
 
-  private putJob(workspaceId: string, jobId: string, job: ScriptJobView): void {
-    this.jobs.set(keyOf(workspaceId, jobId), job);
-    this.publish();
+  function putJob(workspaceId: string, jobId: string, job: ScriptJobView): void {
+    jobs.set(keyOf(workspaceId, jobId), job);
+    publish();
   }
 
-  private putJobAt(key: string, job: ScriptJobView): void {
-    this.jobs.set(key, job);
-    this.publish();
+  function putJobAt(key: string, job: ScriptJobView): void {
+    jobs.set(key, job);
+    publish();
   }
 
-  private publish(): void {
-    this.views.clear();
-    for (const listener of this.listeners) listener();
+  function publish(): void {
+    views.clear();
+    for (const listener of listeners) listener();
   }
 
-  private ensurePolling(): void {
-    if (this.timer || !this.transport) return;
-    this.timer = setInterval(() => {
-      void this.tick();
+  function ensurePolling(): void {
+    if (timer || !transport) return;
+    timer = setInterval(() => {
+      void tick();
     }, POLL_INTERVAL_MS);
   }
 
-  private stopPolling(): void {
-    if (!this.timer) return;
-    clearInterval(this.timer);
-    this.timer = null;
+  function stopPolling(): void {
+    if (!timer) return;
+    clearInterval(timer);
+    timer = null;
   }
 
-  private async tick(): Promise<void> {
-    const transport = this.transport;
-    if (!transport || this.polling) return;
+  async function tick(): Promise<void> {
+    const active = transport;
+    if (!active || polling) return;
 
-    const running = [...this.jobs.entries()].filter(([, job]) => job.status === "running");
+    const running = [...jobs.entries()].filter(([, job]) => job.status === "running");
     if (running.length === 0) {
-      this.stopPolling();
+      stopPolling();
       return;
     }
 
-    this.polling = true;
+    polling = true;
     try {
       await Promise.all(
         running.map(async ([key, job]) => {
           let result: RpcOutput<typeof runScriptPollRpc>;
           try {
-            result = await transport.poll({ jobId: job.jobId });
+            result = await active.poll({ jobId: job.jobId });
           } catch {
             return; // Transient RPC failure: keep polling on the next tick.
           }
-          const current = this.jobs.get(key);
+          const current = jobs.get(key);
           if (!current || current.status !== "running") return;
 
           if (result.status === "running") {
-            this.putJobAt(key, {
+            putJobAt(key, {
               ...current,
               startedAt: result.startedAt ?? current.startedAt,
               output: result.output,
@@ -287,10 +314,10 @@ class RunStore {
 
           const finishedAt = result.finishedAt ?? new Date().toISOString();
           if (result.status === "missing") {
-            this.putJobAt(key, { ...current, status: "stopped", finishedAt, output: result.output });
+            putJobAt(key, { ...current, status: "stopped", finishedAt, output: result.output });
             return;
           }
-          this.putJobAt(key, {
+          putJobAt(key, {
             ...current,
             status: result.status === "succeeded" ? "succeeded" : "failed",
             exitCode: result.exitCode,
@@ -300,12 +327,14 @@ class RunStore {
         }),
       );
     } finally {
-      this.polling = false;
+      polling = false;
     }
   }
+
+  return { subscribe, configure, view, startScript, stopScript, runApp };
 }
 
-export const runStore = new RunStore();
+export const runStore = createRunStore();
 
 /** Called by the client entry on load, and with `null` on cleanup. */
 export function configureRuns(transport: RunsTransport | null): void {

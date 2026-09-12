@@ -242,6 +242,25 @@ async function main() {
   const code = result.outputFiles[0].text;
   console.log(`bundled index.client.tsx: ${code.length} bytes`);
 
+  // Paseo evals the client bundle in the app's engine. In a large eval'd function
+  // RN's Hermes compiles every `class` to undefined, which crashes iOS/iPad with
+  // "Cannot read property 'prototype' of undefined". V8/JSC here cannot detect
+  // that, so reject class syntax outright: `npm run check:client:hermes` runs the
+  // real engine check. Keep client code to functions, closures and objects.
+  const classSites = code
+    .split("\n")
+    .map((line, index) => ({ line, index: index + 1 }))
+    .filter(({ line }) => /(^|[^\w.])class\s*[{A-Za-z_$]/.test(line));
+  if (classSites.length > 0) {
+    for (const site of classSites.slice(0, 8)) {
+      console.error(`  class syntax at bundle line ${site.index}: ${site.line.trim().slice(0, 90)}`);
+    }
+    console.error(
+      `\nclient bundle FAILED: ${classSites.length} class definition(s) — Hermes mis-compiles classes in eval'd code (iPad crash).`,
+    );
+    process.exit(1);
+  }
+
   // Paseo evaluates the client bundle as a factory that receives the host modules.
   const factory = new Function("require", "module", "exports", code);
   const module = { exports: {} };
