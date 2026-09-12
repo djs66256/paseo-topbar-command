@@ -101,6 +101,8 @@ function hasExplicitUsageKey(button: UsageButton): boolean {
  * expands to every distinct `commandcode[-_]*` key in auth.json (deduped by
  * key), each card carrying the `accountSlot` the daemon resolves its key from.
  * `sourceIndex` lets config edits find the original paseo.json entry again.
+ * Labels stay exactly as written: the card shows its account (and the plan lives
+ * in the expanded details), so a per-card label suffix would just repeat it.
  */
 async function expandCommandCodeButtons(buttons: ButtonConfig[]): Promise<ButtonConfig[]> {
   const expanded: ButtonConfig[] = [];
@@ -123,14 +125,8 @@ async function expandCommandCodeButtons(buttons: ButtonConfig[]): Promise<Button
       continue;
     }
 
-    const multi = accounts.accounts.length > 1;
     for (const account of accounts.accounts) {
-      expanded.push({
-        ...withSource,
-        accountSlot: account.slot,
-        // Only distinguish labels when several cards would otherwise look alike.
-        ...(multi ? { label: `${button.label} · ${account.account ?? account.slot}` } : {}),
-      });
+      expanded.push({ ...withSource, accountSlot: account.slot });
     }
   }
 

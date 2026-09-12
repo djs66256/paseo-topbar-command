@@ -142,8 +142,9 @@ macOS 下 `open -a/-b` 的语义正是「打开，若已打开则切换到它」
 面板里会自动出现一张卡片**每个账号一张**：daemon 会扫描 auth 文件里所有匹配
 `commandcode[-_]*` 的槽位（`commandcode`、`commandcode_1`、`commandcode-2`、`command_code3`…），
 按 key 去重（同一个 key 存在多个槽位只算一个账号），并用槽位里的 `account` 作为账号名。
-所以 `auth.json` 里 `commandcode` 和 `commandcode_2` 指同一个 key 时，只会出现一张对应卡片；
-卡片标签会带账号名（如 `CommandCode · djs66256`）。
+所以 `auth.json` 里 `commandcode` 和 `commandcode_2` 指同一个 key 时，只会出现一张对应卡片。
+卡片标题保持你写的 `label`（如 `CommandCode`），副标题是 `用量 · <账号>`（如 `用量 · djs662566yccp`）；
+套餐（`individual goat（active）`）、账号槽位、进度条、剩余额度与 Key 来源都在**展开后**的详情里。
 
 - 卡片不直接保存 key：它记住的是 auth 文件里的**槽位**，由 daemon 在 fetch 时读取，
   所以 secret 不会进 paseo.json，也不需要为每个账号手写 `apiKeyPath`。

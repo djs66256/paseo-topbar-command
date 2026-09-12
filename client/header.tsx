@@ -96,12 +96,19 @@ export function createHeaderMenu({
           : entry.error
             ? `失败：${entry.error}`
             : usageSummaryLine(entry.result);
-        // Mark the account pi currently authenticates with, so the menu answers
-        // "which of my CommandCode logins is active?" without opening a card.
+        // Several cards share one label, so name the account and mark the one pi
+        // currently authenticates with.
+        const account = entry.result?.account ?? button.accountSlot ?? null;
         const marker = entry.result?.isDefault
           ? `当前账号${entry.result.defaultAccount ? `（${entry.result.defaultAccount}）` : ""} · `
           : "";
-        items.push(hintItem(`usage-${index}`, `${button.label} · ${marker}${summary}`, "Gauge"));
+        items.push(
+          hintItem(
+            `usage-${index}`,
+            `${button.label}${account ? ` · ${account}` : ""} · ${marker}${summary}`,
+            "Gauge",
+          ),
+        );
         return;
       }
       items.push({

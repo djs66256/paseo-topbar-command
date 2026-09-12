@@ -796,8 +796,8 @@ async function main(): Promise<void> {
         commandCode.map((button) => button.accountSlot),
         ["commandcode_2", "commandcode_1"],
       );
-      assert.ok(commandCode[0].label.includes("acct-A"));
-      assert.ok(commandCode[1].label.includes("acct-B"));
+      // Labels stay as written; the card itself shows which account it is.
+      assert.ok(commandCode.every((button) => button.label === "CommandCode"));
       // Config edits must target the original button, not the card index.
       assert.equal(commandCode[0].sourceIndex, 0);
       assert.equal(commandCode[1].sourceIndex, 0);

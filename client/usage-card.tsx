@@ -52,6 +52,13 @@ export function UsageCard({
   const [defaultError, setDefaultError] = useState(false);
   const isDefault = result?.isDefault === true;
   const activeAccount = result?.defaultAccount ?? result?.account ?? null;
+  /**
+   * What identifies this card under the label: the live provider account when
+   * known, else the auth slot it reads (auto-discovered cards), else provider.
+   * The plan (e.g. "individual goat") is kept for the expanded details instead,
+   * so the collapsed card stays a single readable line.
+   */
+  const accountLabel = result?.account ?? button.accountSlot ?? null;
 
   async function applyDefault() {
     setDefaultPending(true);
@@ -233,11 +240,7 @@ export function UsageCard({
           style={({ pressed }) => [{ flex: 1 }, pressed && { opacity: 0.7 }]}
         >
           <Text style={styles.label}>{button.label}</Text>
-          <Text style={styles.labelMuted}>
-            用量 · {result?.plan ?? button.provider}
-            {result?.account ? ` · ${result.account}` : ""}
-            {button.accountSlot && !result?.account ? ` · ${button.accountSlot}` : ""}
-          </Text>
+          <Text style={styles.labelMuted}>用量 · {accountLabel ?? button.provider}</Text>
         </Pressable>
         {entry.loading ? <ActivityIndicator size="small" color={theme.colors.accent} /> : null}
         <Pressable
@@ -281,6 +284,7 @@ export function UsageCard({
       {expanded ? (
         <View style={styles.details}>
           <Text style={styles.detailsTitle}>用量详情</Text>
+          {result?.plan ? metaRow("套餐", result.plan) : null}
           {button.accountSlot
             ? metaRow(
                 "账号",

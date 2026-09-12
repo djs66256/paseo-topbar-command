@@ -95,10 +95,12 @@ export function StatusPopover({ theme, layout, workspaceId }: PluginButtonConten
               : entry?.error
                 ? `失败：${entry.error}`
                 : usageSummaryLine(entry?.result ?? null);
+            const account = entry?.result?.account ?? card.button.accountSlot ?? null;
             return (
               <View key={card.key} style={styles.row}>
                 <Text style={styles.label} numberOfLines={1}>
                   {card.button.label}
+                  {account ? ` · ${account}` : ""}
                 </Text>
                 <Text style={styles.usageValue} numberOfLines={2}>
                   {summary}
