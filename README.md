@@ -115,6 +115,81 @@ macOS 下 `open -a/-b` 的语义正是「打开，若已打开则切换到它」
 运行中可点「停止」。面板和顶栏 popover 共用同一份运行状态（`client/run-store.ts`），
 而且脚本任务 id 带上了 workspace 前缀，所以不同项目里同名的 `id` 可以同时跑。
 
+### usage 按钮（订阅用量 / 多账号）
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `type` | 是 | `"usage"` |
+| `id` | 是 | 按钮唯一 id |
+| `label` | 是 | 按钮显示名 |
+| `provider` | 是 | 内置：`commandcode` / `minimax-cn` / `minimax` |
+| `apiKey` | 否 | 直接写 key（不推荐，会进 paseo.json） |
+| `apiKeyEnv` | 否 | 从环境变量读 key |
+| `apiKeyPath` | 否 | `文件#a.b.c` JSON 指针，如 `~/.pi/agent/auth.json#commandcode_1.key` |
+| `baseUrl` | 否 | 覆盖 provider 端点 |
+| `refreshIntervalMinutes` | 否 | 自动刷新间隔，默认 60 |
+| `description` | 否 | 按钮下的说明文字 |
+
+展开卡片显示 5 小时 / 每周 / 月度进度条、重置倒计时、剩余额度与 Key 来源；
+顶栏菜单也会把每个 usage 按钮的摘要列出来。
+
+**CommandCode 多账号是自动的。** 只写一个按钮：
+
+```json
+{ "type": "usage", "id": "cc", "label": "CommandCode", "provider": "commandcode" }
+```
+
+面板里会自动出现一张卡片**每个账号一张**：daemon 会扫描 auth 文件里所有匹配
+`commandcode[-_]*` 的槽位（`commandcode`、`commandcode_1`、`commandcode-2`、`command_code3`…），
+按 key 去重（同一个 key 存在多个槽位只算一个账号），并用槽位里的 `account` 作为账号名。
+所以 `auth.json` 里 `commandcode` 和 `commandcode_2` 指同一个 key 时，只会出现一张对应卡片；
+卡片标签会带账号名（如 `CommandCode · djs66256`）。
+
+- 卡片不直接保存 key：它记住的是 auth 文件里的**槽位**，由 daemon 在 fetch 时读取，
+  所以 secret 不会进 paseo.json，也不需要为每个账号手写 `apiKeyPath`。
+- 每个账号优先用**专属槽位**（不用 `commandcode` 这个“当前默认”指针），
+  这样切换默认账号后卡片不会被 “带跑”，两张卡始终是两个账号。
+- 如果一个 `commandcode` 槽位都没有，也会回退扫描（例如只有 `commandcode_2` 时照样能取到）。
+- 想钉死某个账号、只要一张卡：按钮上写 `apiKeyPath`（则不再自动展开）；
+  `apiKey` / `apiKeyEnv` 同理。
+
+也可以用 `apiKeyPath` 手写多个按钮，效果和自动展开一样（同一个 `id` 重复也安全，
+卡片按位置而不是 `id` 区分）：
+
+```json
+{
+  "buttons": [
+    {
+      "type": "usage",
+      "id": "cc-main",
+      "label": "CommandCode · main",
+      "provider": "commandcode",
+      "apiKeyPath": "~/.pi/agent/auth.json#commandcode.key"
+    },
+    {
+      "type": "usage",
+      "id": "cc-second",
+      "label": "CommandCode · second",
+      "provider": "commandcode",
+      "apiKeyPath": "~/.pi/agent/auth.json#commandcode_1.key"
+    }
+  ]
+}
+```
+
+展开的卡片最底部有一行操作按钮：**设置为默认** 与 **设置**。
+
+- 「设置为默认」把这个账号的 key（以及 `account` 名）写进 `auth.json["commandcode"]`，
+  也就是 pi 以默认 provider 认证时读的那条记录 —— 点一下就能切换当前账号。
+- 已经是当前默认（key 与 `auth.json[commandcode]` 相同）的卡片显示 **当前账号 · <account>**
+  并置灰，不会再触发写入；切换后同一 workspace 的所有卡片会重新读取用量与状态。
+- 被顶掉的旧默认账号如果没存在别处，会被存到第一个空闲的 `commandcode_<n>` 槽位，
+  所以来回切换不会丢账号；写文件用临时文件 + rename，权限保持 `0600`。
+- 写入的是 pi 的凭证文件，已经开着的 pi 会话可能仍持有旧凭证（新会话一定生效）；
+  切换后卡片会自动重新展开，不需要重新加载插件。
+- 账号列表来自 auth 文件，新增/删除账号后要在面板里点一下「重新加载」
+  （或 `paseo plugin reload`）才会多出/收起卡片。
+
 ## 代码结构（Paseo 0.8 runtime entries）
 
 ```

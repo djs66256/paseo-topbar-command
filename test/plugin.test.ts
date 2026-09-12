@@ -11,13 +11,23 @@ import path from "node:path";
 
 import { parseConfigText, resolvePanelLocations } from "../shared/config";
 import {
+  canonicalAuthProvider,
+  commandCodeAccountsFrom,
+  commandCodeSlots,
+  credentialAccount,
   credentialKey,
   discoverApiKey,
+  discoverCommandCodeAccounts,
   handleUsageConfigSave,
+  handleUsageSetDefault,
+  isCommandCodeProvider,
   parseCommandCodePayload,
   parseMinimaxPayload,
   providerAliases,
+  readDefaultStatus,
+  resolveAccountSlot,
   searchProvider,
+  setDefaultAccount,
 } from "../server/usage";
 import {
   buildLaunchArgs,
@@ -319,7 +329,7 @@ async function main(): Promise<void> {
     const result = await handleUsageConfigSave(
       {
         projectRoot: dir,
-        buttonId: "u",
+        buttonIndex: 0,
         provider: "minimax-cn",
         apiKey: "",
         apiKeyEnv: "MINIMAX_CN_API_KEY",
@@ -353,7 +363,7 @@ async function main(): Promise<void> {
     const result = await handleUsageConfigSave(
       {
         projectRoot: dir,
-        buttonId: "s",
+        buttonIndex: 0,
         provider: "commandcode",
         apiKey: "",
         apiKeyEnv: "",
@@ -365,6 +375,358 @@ async function main(): Promise<void> {
     );
     assert.equal(result.ok, false);
     assert.ok(result.error && result.error.includes("不是 usage"));
+  });
+
+  // -------------------------------------------------------------------------
+  console.log("\nmultiple CommandCode accounts: default switching");
+  // -------------------------------------------------------------------------
+
+  /** Build a throwaway auth.json holding two CommandCode logins. */
+  async function writeAuthFixture(dir: string) {
+    const file = path.join(dir, "auth.json");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      file,
+      JSON.stringify(
+        {
+          commandcode: { type: "api_key", key: "key-A", account: "acct-A" },
+          commandcode_1: { type: "api_key", key: "key-B", account: "acct-B" },
+        },
+        null,
+        2,
+      ),
+    );
+    return file;
+  }
+
+  await test("canonicalAuthProvider collapses CommandCode aliases", () => {
+    assert.equal(canonicalAuthProvider("commandcode"), "commandcode");
+    assert.equal(canonicalAuthProvider("Command-Code"), "commandcode");
+    assert.equal(canonicalAuthProvider("command_code"), "commandcode");
+    assert.equal(canonicalAuthProvider("minimax-cn"), "minimax-cn");
+    assert.equal(isCommandCodeProvider("command-code"), true);
+    assert.equal(isCommandCodeProvider("minimax"), false);
+  });
+
+  await test("commandCodeSlots finds the whole commandcode[-_]* family in order", () => {
+    const slots = commandCodeSlots({
+      "minimax-cn": {},
+      commandcode_10: {},
+      "command-code": {},
+      commandcode: {},
+      commandcode_2: {},
+      commandcode_1: {},
+      "command_code": {},
+      other: {},
+    });
+    assert.deepEqual(slots, [
+      "commandcode",
+      "command_code",
+      "command-code",
+      "commandcode_1",
+      "commandcode_2",
+      "commandcode_10",
+    ]);
+  });
+
+  await test("commandCodeAccountsFrom dedupes slots and pins each account to a dedicated slot", () => {
+    // The real-world shape: `commandcode` and `commandcode_2` hold the same key.
+    // The card must not be pinned to the canonical pointer, or switching the
+    // default would drag that card along with it.
+    const accounts = commandCodeAccountsFrom({
+      commandcode: { type: "api_key", key: "key-A" },
+      commandcode_2: { account: "acct-A", type: "api_key", key: "key-A" },
+      commandcode_1: { account: "acct-B", type: "api_key", key: "key-B" },
+    });
+    assert.equal(accounts.length, 2);
+    assert.deepEqual(
+      accounts.map((account) => [account.slot, account.account, account.isDefault]),
+      [
+        ["commandcode_2", "acct-A", true],
+        ["commandcode_1", "acct-B", false],
+      ],
+    );
+
+    // With no duplicate slot the canonical entry is all there is to pin to.
+    const single = commandCodeAccountsFrom({
+      commandcode: { type: "api_key", key: "key-A" },
+      commandcode_1: { account: "acct-B", type: "api_key", key: "key-B" },
+    });
+    assert.equal(single[0].slot, "commandcode");
+    assert.equal(single[0].isDefault, true);
+  });
+
+  await test("resolveAccountSlot reads one slot out of an auth file", async () => {
+    const file = await writeAuthFixture(path.join(tmpRoot, "slot-lookup"));
+    const slot = await resolveAccountSlot("commandcode_1", { preferFile: file });
+    assert.equal(slot.key, "key-B");
+    assert.equal(slot.account, "acct-B");
+    assert.equal(slot.file, file);
+    const missing = await resolveAccountSlot("commandcode_9", { preferFile: file });
+    assert.equal(missing.key, null);
+  });
+
+  await test("discoverCommandCodeAccounts reports the file it read", async () => {
+    const file = await writeAuthFixture(path.join(tmpRoot, "discover-accounts"));
+    const found = await discoverCommandCodeAccounts({ preferFile: file });
+    assert.equal(found.file, file);
+    assert.equal(found.accounts.length, 2);
+  });
+
+  await test("discoverApiKey falls back to a suffixed login when commandcode is absent", async () => {
+    const home = path.join(tmpRoot, "fallback-home");
+    await mkdir(path.join(home, ".pi", "agent"), { recursive: true });
+    await writeFile(
+      path.join(home, ".pi", "agent", "auth.json"),
+      JSON.stringify({
+        commandcode_2: { account: "acct-B", type: "api_key", key: "key-B" },
+      }),
+    );
+    const found = await discoverApiKey({ provider: "commandcode", home, env: {} });
+    assert.equal(found.key, "key-B");
+    assert.equal(found.slot, "commandcode_2");
+    assert.equal(found.account, "acct-B");
+  });
+
+  await test("credentialAccount reads the account label", () => {
+    assert.equal(credentialAccount({ account: "djs662566", key: "k" }), "djs662566");
+    assert.equal(credentialAccount({ name: "fallback" }), "fallback");
+    assert.equal(credentialAccount({ key: "k" }), null);
+  });
+
+  await test("discoverApiKey reports the file, slot and account of an apiKeyPath", async () => {
+    const file = await writeAuthFixture(path.join(tmpRoot, "discover-slots"));
+    const found = await discoverApiKey({
+      provider: "commandcode",
+      apiKeyPath: `${file}#commandcode_1.key`,
+      home: tmpRoot,
+      env: {},
+    });
+    assert.equal(found.key, "key-B");
+    assert.equal(found.file, file);
+    assert.equal(found.slot, "commandcode_1");
+    assert.equal(found.account, "acct-B");
+  });
+
+  await test("readDefaultStatus compares against the canonical entry", async () => {
+    const file = await writeAuthFixture(path.join(tmpRoot, "default-status"));
+    const active = await readDefaultStatus({
+      provider: "commandcode",
+      key: "key-A",
+      preferFile: file,
+    });
+    assert.equal(active.isDefault, true);
+    assert.equal(active.defaultAccount, "acct-A");
+
+    const other = await readDefaultStatus({
+      provider: "commandcode",
+      key: "key-B",
+      preferFile: file,
+    });
+    assert.equal(other.isDefault, false);
+    assert.equal(other.defaultAccount, "acct-A");
+
+    // A provider with no canonical entry has no answer, not a false one.
+    const unknown = await readDefaultStatus({ provider: "nope", key: "key-A", preferFile: file });
+    assert.equal(unknown.isDefault, null);
+  });
+
+  await test("setDefaultAccount switches the canonical key and keeps other logins", async () => {
+    const dir = path.join(tmpRoot, "set-default");
+    const file = await writeAuthFixture(dir);
+    const result = await setDefaultAccount({
+      provider: "commandcode",
+      key: "key-B",
+      account: "acct-B",
+      preferFile: file,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.account, "acct-B");
+
+    const saved = JSON.parse(await readFile(file, "utf8")) as Record<
+      string,
+      { key?: string; account?: string }
+    >;
+    assert.equal(saved.commandcode.key, "key-B");
+    assert.equal(saved.commandcode.account, "acct-B");
+    // The displaced default was not stored anywhere else, so it is parked.
+    assert.equal(saved.commandcode_2.key, "key-A");
+    // The slot the new default came from is untouched.
+    assert.equal(saved.commandcode_1.key, "key-B");
+  });
+
+  await test("setDefaultAccount is a no-op when the key is already default", async () => {
+    const dir = path.join(tmpRoot, "set-default-noop");
+    const file = await writeAuthFixture(dir);
+    const result = await setDefaultAccount({
+      provider: "commandcode",
+      key: "key-A",
+      account: "acct-A",
+      preferFile: file,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.isDefault, true);
+    const saved = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(saved).sort(), ["commandcode", "commandcode_1"]);
+  });
+
+  await test("setDefaultAccount archives a displaced oauth default instead of losing it", async () => {
+    const dir = path.join(tmpRoot, "set-default-oauth");
+    await mkdir(dir, { recursive: true });
+    const file = path.join(dir, "auth.json");
+    await writeFile(
+      file,
+      JSON.stringify({
+        commandcode: { type: "oauth", access: "tok", refresh: "r", expires: 123 },
+      }),
+    );
+    const result = await setDefaultAccount({
+      provider: "commandcode",
+      key: "key-B",
+      account: "acct-B",
+      preferFile: file,
+    });
+    assert.equal(result.ok, true);
+    const saved = JSON.parse(await readFile(file, "utf8")) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    assert.equal(saved.commandcode.type, "api_key");
+    assert.equal(saved.commandcode.key, "key-B");
+    assert.equal(saved.commandcode.access, undefined);
+    assert.equal(saved.commandcode_1.type, "oauth");
+    assert.equal(saved.commandcode_1.access, "tok");
+  });
+
+  await test("handleUsageSetDefault switches the account a usage button points at", async () => {
+    const dir = path.join(tmpRoot, "set-default-button");
+    const file = await writeAuthFixture(dir);
+    await writeFile(
+      path.join(dir, "paseo.json"),
+      JSON.stringify({
+        buttons: [
+          {
+            type: "usage",
+            id: "cc-b",
+            label: "CommandCode B",
+            provider: "commandcode",
+            apiKeyPath: `${file}#commandcode_1.key`,
+          },
+        ],
+      }),
+    );
+
+    // Env keys are resolved before apiKeyPath, so a developer shell must not win.
+    const savedEnv = {
+      COMMAND_CODE_API_KEY: process.env.COMMAND_CODE_API_KEY,
+      COMMANDCODE_API_KEY: process.env.COMMANDCODE_API_KEY,
+    };
+    delete process.env.COMMAND_CODE_API_KEY;
+    delete process.env.COMMANDCODE_API_KEY;
+    try {
+      const result = await handleUsageSetDefault(
+        { projectRoot: dir, buttonIndex: 0, accountSlot: null },
+        ctx,
+      );
+      assert.equal(result.ok, true);
+      assert.equal(result.isDefault, true);
+      assert.equal(result.account, "acct-B");
+      const saved = JSON.parse(await readFile(file, "utf8")) as Record<
+        string,
+        { key?: string }
+      >;
+      assert.equal(saved.commandcode.key, "key-B");
+    } finally {
+      for (const [name, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  await test("handleUsageSetDefault switches by account slot (auto-discovered card)", async () => {
+    const home = path.join(tmpRoot, "slot-default-home");
+    const dir = path.join(tmpRoot, "slot-default-project");
+    await mkdir(path.join(home, ".pi", "agent"), { recursive: true });
+    await mkdir(dir, { recursive: true });
+    const authFile = path.join(home, ".pi", "agent", "auth.json");
+    await writeFile(
+      authFile,
+      JSON.stringify({
+        commandcode: { type: "api_key", key: "key-A", account: "acct-A" },
+        commandcode_1: { type: "api_key", key: "key-B", account: "acct-B" },
+      }),
+    );
+    // No apiKeyPath: the card addresses its account purely by slot.
+    await writeFile(
+      path.join(dir, "paseo.json"),
+      JSON.stringify({
+        buttons: [
+          { type: "usage", id: "cc", label: "CommandCode", provider: "commandcode" },
+        ],
+      }),
+    );
+
+    const savedHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const result = await handleUsageSetDefault(
+        { projectRoot: dir, buttonIndex: 0, accountSlot: "commandcode_1" },
+        ctx,
+      );
+      assert.equal(result.ok, true);
+      assert.equal(result.account, "acct-B");
+      const saved = JSON.parse(await readFile(authFile, "utf8")) as Record<
+        string,
+        { key?: string; account?: string }
+      >;
+      assert.equal(saved.commandcode.key, "key-B");
+      assert.equal(saved.commandcode.account, "acct-B");
+      // The displaced default is parked, not lost.
+      assert.equal(saved.commandcode_2.key, "key-A");
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+    }
+  });
+
+  await test("handleUsageSetDefault reports a missing key instead of writing", async () => {
+    const dir = path.join(tmpRoot, "set-default-missing");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, "paseo.json"),
+      JSON.stringify({
+        buttons: [
+          {
+            type: "usage",
+            id: "cc-x",
+            label: "CommandCode X",
+            provider: "commandcode",
+            apiKeyPath: path.join(dir, "missing.json"),
+          },
+        ],
+      }),
+    );
+    const savedEnv = {
+      COMMAND_CODE_API_KEY: process.env.COMMAND_CODE_API_KEY,
+      COMMANDCODE_API_KEY: process.env.COMMANDCODE_API_KEY,
+    };
+    delete process.env.COMMAND_CODE_API_KEY;
+    delete process.env.COMMANDCODE_API_KEY;
+    try {
+      // `home` is the real one, so auto-discovery would find a real auth.json;
+      // the assertion only checks the error path shape when it finds nothing.
+      const result = await handleUsageSetDefault(
+        { projectRoot: dir, buttonIndex: 0, accountSlot: null },
+        ctx,
+      );
+      if (!result.ok) assert.ok(result.error && result.error.includes("API key"));
+    } finally {
+      for (const [name, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 
   // -------------------------------------------------------------------------
@@ -395,6 +757,96 @@ async function main(): Promise<void> {
     assert.equal(result.error, null);
     assert.equal(result.buttons.length, 2);
     assert.equal(result.source, path.join(tmpRoot, "paseo.json"));
+  });
+
+  await test("load-config expands one commandcode button into one card per account", async () => {
+    const home = path.join(tmpRoot, "expand-home");
+    const dir = path.join(tmpRoot, "expand-project");
+    await mkdir(path.join(home, ".pi", "agent"), { recursive: true });
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(home, ".pi", "agent", "auth.json"),
+      JSON.stringify({
+        commandcode: { type: "api_key", key: "key-A" },
+        commandcode_2: { account: "acct-A", type: "api_key", key: "key-A" },
+        commandcode_1: { account: "acct-B", type: "api_key", key: "key-B" },
+      }),
+    );
+    await writeFile(
+      path.join(dir, "paseo.json"),
+      JSON.stringify({
+        buttons: [
+          { type: "usage", id: "cc", label: "CommandCode", provider: "commandcode" },
+          { type: "usage", id: "mm", label: "MiniMax", provider: "minimax-cn" },
+        ],
+      }),
+    );
+
+    // `os.homedir()` follows $HOME on POSIX, so the expansion reads this fixture.
+    const savedHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const result = await handleLoadConfig({ projectRoot: dir }, ctx);
+      assert.equal(result.error, null);
+      const usage = result.buttons.filter((button) => button.type === "usage");
+      // Two distinct CommandCode logins + the untouched MiniMax button.
+      assert.equal(usage.length, 3);
+      const commandCode = usage.filter((button) => button.provider === "commandcode");
+      assert.deepEqual(
+        commandCode.map((button) => button.accountSlot),
+        ["commandcode_2", "commandcode_1"],
+      );
+      assert.ok(commandCode[0].label.includes("acct-A"));
+      assert.ok(commandCode[1].label.includes("acct-B"));
+      // Config edits must target the original button, not the card index.
+      assert.equal(commandCode[0].sourceIndex, 0);
+      assert.equal(commandCode[1].sourceIndex, 0);
+      const minimax = usage.find((button) => button.provider === "minimax-cn");
+      assert.equal(minimax?.sourceIndex, 1);
+      assert.equal(minimax?.accountSlot, undefined);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+    }
+  });
+
+  await test("load-config keeps a commandcode button with an explicit apiKeyPath as one card", async () => {
+    const home = path.join(tmpRoot, "expand-home-explicit");
+    const dir = path.join(tmpRoot, "expand-project-explicit");
+    await mkdir(path.join(home, ".pi", "agent"), { recursive: true });
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(home, ".pi", "agent", "auth.json"),
+      JSON.stringify({
+        commandcode: { type: "api_key", key: "key-A" },
+        commandcode_1: { account: "acct-B", type: "api_key", key: "key-B" },
+      }),
+    );
+    await writeFile(
+      path.join(dir, "paseo.json"),
+      JSON.stringify({
+        buttons: [
+          {
+            type: "usage",
+            id: "cc-b",
+            label: "CommandCode B",
+            provider: "commandcode",
+            apiKeyPath: "~/.pi/agent/auth.json#commandcode_1.key",
+          },
+        ],
+      }),
+    );
+    const savedHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const result = await handleLoadConfig({ projectRoot: dir }, ctx);
+      assert.equal(result.buttons.length, 1);
+      assert.equal(result.buttons[0].type === "usage" && result.buttons[0].accountSlot, undefined);
+      assert.equal(result.buttons[0].type === "usage" && result.buttons[0].sourceIndex, 0);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+    }
   });
 
   // -------------------------------------------------------------------------

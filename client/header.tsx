@@ -89,13 +89,19 @@ export function createHeaderMenu({
     config.buttons.forEach((button, index) => {
       if (button.type === "usage") {
         // Read-only glance row: live summary, refreshed by the usage store.
-        const entry = usageStore.view(workspaceId, button.id);
+        // Keyed by card index, since one Config button can expand per account.
+        const entry = usageStore.view(workspaceId, String(index));
         const summary = entry.loading
           ? "获取中…"
           : entry.error
             ? `失败：${entry.error}`
             : usageSummaryLine(entry.result);
-        items.push(hintItem(`usage-${index}`, `${button.label} · ${summary}`, "Gauge"));
+        // Mark the account pi currently authenticates with, so the menu answers
+        // "which of my CommandCode logins is active?" without opening a card.
+        const marker = entry.result?.isDefault
+          ? `当前账号${entry.result.defaultAccount ? `（${entry.result.defaultAccount}）` : ""} · `
+          : "";
+        items.push(hintItem(`usage-${index}`, `${button.label} · ${marker}${summary}`, "Gauge"));
         return;
       }
       items.push({

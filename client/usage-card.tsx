@@ -1,7 +1,7 @@
 // One coding-plan usage card. Extracted into its own component so the panel can
 // map over buttons and still call the `useUsage` hook legally (no hooks in loops).
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { DEFAULT_USAGE_REFRESH_MINUTES, type UsageButton, type UsageWindow } from "../shared/config";
 import { formatResetCountdown, usageSummaryLine } from "./usage-format";
@@ -9,6 +9,8 @@ import { usageStore, useUsage } from "./usage-store";
 
 export interface UsageCardProps {
   workspaceId: string;
+  /** Position key of this card in the loaded button list (unique per card). */
+  buttonKey: string;
   button: UsageButton;
   theme: {
     colors: {
@@ -27,20 +29,52 @@ export interface UsageCardProps {
   expanded: boolean;
   onToggle(): void;
   onConfigure(): void;
+  /** Called after a successful default-account switch (re-expands the cards). */
+  onDefaultChanged?(): void;
 }
 
 export function UsageCard({
   workspaceId,
+  buttonKey,
   button,
   theme,
   compact,
   expanded,
   onToggle,
   onConfigure,
+  onDefaultChanged,
 }: UsageCardProps) {
-  const entry = useUsage(workspaceId, button.id);
+  const entry = useUsage(workspaceId, buttonKey);
   const result = entry.result;
   const now = Date.now();
+  const [defaultPending, setDefaultPending] = useState(false);
+  const [defaultNote, setDefaultNote] = useState<string | null>(null);
+  const [defaultError, setDefaultError] = useState(false);
+  const isDefault = result?.isDefault === true;
+  const activeAccount = result?.defaultAccount ?? result?.account ?? null;
+
+  async function applyDefault() {
+    setDefaultPending(true);
+    setDefaultNote(null);
+    setDefaultError(false);
+    try {
+      const outcome = await usageStore.setDefault(workspaceId, buttonKey);
+      if (outcome.ok) {
+        setDefaultNote(`已设为默认账号${outcome.account ? ` · ${outcome.account}` : ""}`);
+        // Slots may have been re-assigned by the switch, so let the panel
+        // re-expand the account cards instead of showing stale pairings.
+        onDefaultChanged?.();
+      } else {
+        setDefaultError(true);
+        setDefaultNote(outcome.error ?? "切换默认账号失败");
+      }
+    } catch (error) {
+      setDefaultError(true);
+      setDefaultNote(String(error));
+    } finally {
+      setDefaultPending(false);
+    }
+  }
 
   const styles = useMemo(
     () => ({
@@ -122,6 +156,32 @@ export function UsageCard({
         overflow: "hidden" as const,
       },
       barFill: { height: 6, borderRadius: 3 },
+      // Expanded footer: the account switch and the manual config side by side.
+      footer: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        flexWrap: "wrap" as const,
+        gap: 8,
+        borderTopWidth: 1,
+        borderTopColor: theme.colors.border,
+        marginTop: 4,
+        paddingTop: 8,
+      },
+      actionBtn: {
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 6,
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+      },
+      actionBtnDisabled: {
+        borderColor: theme.colors.border,
+        opacity: 0.55,
+      },
+      actionLabel: { color: theme.colors.foreground, fontSize: 12, fontWeight: "600" as const },
+      actionLabelMuted: { color: theme.colors.foregroundMuted, fontSize: 12 },
+      footerNote: { color: theme.colors.foregroundMuted, fontSize: 12 },
+      footerNoteError: { color: theme.colors.statusDanger, fontSize: 12 },
     }),
     [theme, compact],
   );
@@ -176,6 +236,7 @@ export function UsageCard({
           <Text style={styles.labelMuted}>
             用量 · {result?.plan ?? button.provider}
             {result?.account ? ` · ${result.account}` : ""}
+            {button.accountSlot && !result?.account ? ` · ${button.accountSlot}` : ""}
           </Text>
         </Pressable>
         {entry.loading ? <ActivityIndicator size="small" color={theme.colors.accent} /> : null}
@@ -183,18 +244,10 @@ export function UsageCard({
           accessibilityRole="button"
           accessibilityLabel="刷新用量"
           disabled={entry.loading}
-          onPress={() => void usageStore.fetch(workspaceId, button.id)}
+          onPress={() => void usageStore.fetch(workspaceId, buttonKey)}
           style={styles.iconBtn}
         >
           <Icon name="RefreshCw" size={13} color={theme.colors.foregroundMuted} />
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="配置用量"
-          onPress={onConfigure}
-          style={styles.iconBtn}
-        >
-          <Icon name="Settings" size={13} color={theme.colors.foregroundMuted} />
         </Pressable>
         <Pressable
           accessibilityRole="button"
@@ -228,6 +281,12 @@ export function UsageCard({
       {expanded ? (
         <View style={styles.details}>
           <Text style={styles.detailsTitle}>用量详情</Text>
+          {button.accountSlot
+            ? metaRow(
+                "账号",
+                `${button.accountSlot}${result?.account ? ` · ${result.account}` : ""}`,
+              )
+            : null}
           {(result?.windows ?? []).map((window) => {
             const usedPercent = usedPercentOf(window);
             return (
@@ -269,6 +328,42 @@ export function UsageCard({
             "自动刷新",
             `${button.refreshIntervalMinutes ?? DEFAULT_USAGE_REFRESH_MINUTES} 分钟`,
           )}
+
+          <View style={styles.footer}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={isDefault ? "当前账号" : "将此账号设为默认"}
+              disabled={isDefault || defaultPending}
+              onPress={() => void applyDefault()}
+              style={[styles.actionBtn, (isDefault || defaultPending) && styles.actionBtnDisabled]}
+            >
+              <Text
+                style={isDefault ? styles.actionLabelMuted : styles.actionLabel}
+                numberOfLines={1}
+              >
+                {isDefault
+                  ? activeAccount
+                    ? `当前账号 · ${activeAccount}`
+                    : "当前账号"
+                  : defaultPending
+                    ? "切换中…"
+                    : "设置为默认"}
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="配置用量"
+              onPress={onConfigure}
+              style={styles.actionBtn}
+            >
+              <Text style={styles.actionLabel}>设置</Text>
+            </Pressable>
+          </View>
+          {defaultNote ? (
+            <Text style={defaultError ? styles.footerNoteError : styles.footerNote}>
+              {defaultNote}
+            </Text>
+          ) : null}
         </View>
       ) : null}
     </View>

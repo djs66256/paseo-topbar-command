@@ -80,6 +80,18 @@ export const usageButtonSchema = z.object({
   refreshIntervalMinutes: z.number().positive().optional(),
   /** Optional subtitle shown under the label. */
   description: z.string().optional(),
+  /**
+   * Account slot inside the auth file, e.g. `commandcode_1`. Filled in by
+   * `load-config` when a CommandCode button is split into one card per account
+   * (auto-discovery); users normally do not write this.
+   */
+  accountSlot: z.string().optional(),
+  /**
+   * Index of this button in the project's paseo.json. Set by `load-config`
+   * because one config button can expand into several cards, so the card index
+   * is not the config index. Used when writing the button back.
+   */
+  sourceIndex: z.number().int().nonnegative().optional(),
 });
 
 export const buttonSchema = z.discriminatedUnion("type", [
@@ -129,6 +141,14 @@ export const usageResultSchema = z.object({
   plan: z.string().nullable(),
   /** Where the API key came from, e.g. `~/.pi/agent/auth.json#commandcode.key`. */
   keySource: z.string().nullable(),
+  /**
+   * True when this button's key is the credential pi currently uses by default
+   * (i.e. `auth.json[provider]`). Null when it cannot be determined — no key was
+   * found, or the provider has no canonical entry in an auth file.
+   */
+  isDefault: z.boolean().nullable(),
+  /** Account name stored on the active default credential, when known. */
+  defaultAccount: z.string().nullable(),
   windows: z.array(usageWindowSchema),
   metrics: z.array(usageMetricSchema),
   details: z.array(usageMetricSchema),

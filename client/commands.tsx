@@ -99,14 +99,20 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
 
   const [config, setConfig] = useState<LoadedConfig | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
+  // True for a reload that must refetch usage regardless of the 60s freshness
+  // window (e.g. after switching the default account changed the card slots).
+  const [reloadForce, setReloadForce] = useState(false);
   // Which button cards are expanded to show full status + output details.
+  // Keyed by card index: one config button can expand into several cards (and
+  // hand-written configs may reuse ids).
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  // When set, the panel shows the manual usage-config page for this button id.
-  const [configTarget, setConfigTarget] = useState<string | null>(null);
+  // When set, the panel shows the manual usage-config page for this paseo.json
+  // button index (not the card index — expanded cards share one config button).
+  const [configTarget, setConfigTarget] = useState<number | null>(null);
   const [usageForm, setUsageForm] = useState<UsageFormState | null>(null);
 
-  function toggleExpanded(id: string) {
-    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
+  function toggleExpanded(key: string) {
+    setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
   }
 
   // Load paseo.json whenever the project root (or manual reload) changes.
@@ -121,11 +127,11 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
       .then((result) => {
         if (cancelled) return;
         setConfig(result);
-        // Register this workspace's usage buttons and refresh anything stale, so
-        // opening the panel is what asks for usage data.
-        const usageButtons = result.buttons.filter(isUsageButton);
-        usageStore.track(workspaceId, projectRoot, usageButtons);
-        void usageStore.fetchWorkspace(workspaceId, 60_000);
+        // Register this workspace's usage cards and refresh anything stale, so
+        // opening the panel is what asks for usage data. The full list is passed
+        // so card keys line up with the indices the panel renders.
+        usageStore.track(workspaceId, projectRoot, result.buttons);
+        void usageStore.fetchWorkspace(workspaceId, reloadForce ? 0 : 60_000);
       })
       .catch((error: unknown) => {
         if (!cancelled) {
@@ -143,14 +149,15 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
     // loadConfig is a stable useCallback from useRpc; projectRoot + reloadTick drive reloads.
   }, [projectRoot, reloadTick, loadConfig, workspaceId]);
 
-  function reload() {
+  function reload(force = false) {
     // Keep the header button's menu in sync with the panel.
     refreshWorkspaceMenu(workspaceId);
+    setReloadForce(force);
     setReloadTick((tick) => tick + 1);
   }
 
-  function openUsageConfig(button: UsageButton) {
-    setConfigTarget(button.id);
+  function openUsageConfig(button: UsageButton, cardIndex: number) {
+    setConfigTarget(button.sourceIndex ?? cardIndex);
     setUsageForm({
       provider: button.provider,
       apiKey: button.apiKey ?? "",
@@ -167,7 +174,7 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
   }
 
   async function saveUsageForm() {
-    if (!usageForm || !configTarget || !projectRoot) return;
+    if (!usageForm || configTarget === null || !projectRoot) return;
     const minutes = Number(usageForm.refreshIntervalMinutes);
     if (!Number.isFinite(minutes) || minutes <= 0) {
       setUsageForm((form) =>
@@ -179,7 +186,7 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
     try {
       const result = await usageStore.saveConfig({
         projectRoot,
-        buttonId: configTarget,
+        buttonIndex: configTarget,
         provider: usageForm.provider.trim(),
         apiKey: usageForm.apiKey,
         apiKeyEnv: usageForm.apiKeyEnv,
@@ -331,7 +338,7 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
   function renderUsageConfig() {
     const button = buttons.find(
       (candidate): candidate is UsageButton =>
-        isUsageButton(candidate) && candidate.id === configTarget,
+        isUsageButton(candidate) && (candidate.sourceIndex ?? -1) === configTarget,
     );
     const form = usageForm;
     const set = (patch: Partial<UsageFormState>) =>
@@ -467,7 +474,7 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
               按钮配置：项目根目录下的 paseo.json{config?.source ? `（${config.source}）` : ""}
             </Text>
           </View>
-          <Pressable accessibilityRole="button" onPress={reload} style={styles.reloadBtn}>
+          <Pressable accessibilityRole="button" onPress={() => reload()} style={styles.reloadBtn}>
             <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>重新加载</Text>
           </Pressable>
         </View>
@@ -493,8 +500,9 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
             <Text style={styles.sample}>{SAMPLE_CONFIG}</Text>
           </View>
         ) : (
-          buttons.map((button) => {
-            const isExpanded = expanded[button.id] === true;
+          buttons.map((button, cardIndex) => {
+            const cardKey = String(cardIndex);
+            const isExpanded = expanded[cardKey] === true;
             const metaRow = (label: string, value: string) => (
               <View key={label} style={styles.metaRow}>
                 <Text style={styles.metaLabel}>{label}</Text>
@@ -507,7 +515,7 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={isExpanded ? "收起详情" : "展开详情"}
-                onPress={() => toggleExpanded(button.id)}
+                onPress={() => toggleExpanded(cardKey)}
                 style={styles.iconBtn}
               >
                 <Icon
@@ -522,7 +530,7 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
               const app = runs.apps[button.id];
               const busy = app?.pending ?? false;
               return (
-                <View key={button.id} style={styles.card}>
+                <View key={`card-${cardIndex}`} style={styles.card}>
                   <View style={styles.row}>
                     <Pressable
                       accessibilityRole="button"
@@ -572,14 +580,16 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
             if (isUsageButton(button)) {
               return (
                 <UsageCard
-                  key={button.id}
+                  key={`usage-${cardIndex}`}
                   workspaceId={workspaceId}
+                  buttonKey={cardKey}
                   button={button}
                   theme={theme}
                   compact={layout.compact}
                   expanded={isExpanded}
-                  onToggle={() => toggleExpanded(button.id)}
-                  onConfigure={() => openUsageConfig(button)}
+                  onToggle={() => toggleExpanded(cardKey)}
+                  onConfigure={() => openUsageConfig(button, cardIndex)}
+                  onDefaultChanged={() => reload(true)}
                 />
               );
             }
@@ -590,7 +600,7 @@ export function CommandsPanel({ theme, layout, workspaceId }: PluginWorkspacePan
             const outputTail = job && job.output.length > 0 ? job.output.slice(-3) : [];
 
             return (
-              <View key={button.id} style={styles.card}>
+              <View key={`card-${cardIndex}`} style={styles.card}>
                 <View style={styles.row}>
                   <Pressable
                     accessibilityRole="button"

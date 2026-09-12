@@ -93,6 +93,12 @@ export const usageFetchRpc = defineRpc({
     apiKeyEnv: z.string().nullable(),
     apiKeyPath: z.string().nullable(),
     baseUrl: z.string().nullable(),
+    /**
+     * Auth-file slot this card is pinned to (e.g. `commandcode_1`), set by
+     * account auto-discovery. The daemon resolves the key from that slot, so a
+     * card never has to know the secret or write an apiKeyPath.
+     */
+    accountSlot: z.string().nullable(),
   }),
   output: usageResultSchema,
 });
@@ -102,7 +108,8 @@ export const usageConfigSaveRpc = defineRpc({
   name: "paseo-topbar-command.usage-config-save",
   input: z.object({
     projectRoot: z.string(),
-    buttonId: z.string().min(1),
+    /** Index of the button in paseo.json (now `sourceIndex`, not the card index). */
+    buttonIndex: z.number().int().nonnegative(),
     provider: z.string().min(1),
     /** Empty strings mean "unset" (the field is removed). */
     apiKey: z.string(),
@@ -112,4 +119,36 @@ export const usageConfigSaveRpc = defineRpc({
     refreshIntervalMinutes: z.number().positive(),
   }),
   output: z.object({ ok: z.boolean(), error: z.string().nullable(), source: z.string() }),
+});
+
+/**
+ * Make a CommandCode account the default one pi authenticates with.
+ *
+ * For `commandcode` that means writing the account's key (and its `account`
+ * label) into `auth.json["commandcode"]`, the entry pi reads when
+ * authenticating with the default provider. Other accounts already stored in the
+ * file are kept.
+ */
+export const usageSetDefaultRpc = defineRpc({
+  name: "paseo-topbar-command.usage-set-default",
+  input: z.object({
+    projectRoot: z.string(),
+    /** Index of the button in paseo.json. */
+    buttonIndex: z.number().int().nonnegative(),
+    /**
+     * Account slot to activate (e.g. `commandcode_1`). When null the button's
+     * own key source (apiKeyPath / env / inline) is used.
+     */
+    accountSlot: z.string().nullable(),
+  }),
+  output: z.object({
+    ok: z.boolean(),
+    error: z.string().nullable(),
+    /** True once the requested credential is the active default. */
+    isDefault: z.boolean(),
+    /** Account name that is now active, when known. */
+    account: z.string().nullable(),
+    /** Auth file that was (or would have been) written. */
+    source: z.string(),
+  }),
 });

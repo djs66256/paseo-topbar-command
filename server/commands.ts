@@ -11,7 +11,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
-import { parseConfigText } from "../shared/config";
+import { parseConfigText, type ButtonConfig, type UsageButton } from "../shared/config";
 import {
   loadConfigRpc,
   openAppRpc,
@@ -19,6 +19,7 @@ import {
   runScriptStartRpc,
   runScriptStopRpc,
 } from "../shared/rpc";
+import { discoverCommandCodeAccounts, isCommandCodeProvider } from "./usage";
 
 const LOG_PREFIX = "[paseo-topbar-command]";
 
@@ -75,10 +76,65 @@ export async function handleLoadConfig(
   const { buttons, error } = parseConfigText(text);
   if (error) {
     console.error(`${LOG_PREFIX} load-config: invalid config in ${configPath} — ${error}`);
-  } else {
-    console.log(`${LOG_PREFIX} load-config: ok buttons=${buttons.length} file=${configPath}`);
+    return { buttons, source: configPath, exists: true, error };
   }
-  return { buttons, source: configPath, exists: true, error };
+
+  const expanded = await expandCommandCodeButtons(buttons);
+  console.log(
+    `${LOG_PREFIX} load-config: ok buttons=${expanded.length} (config ${buttons.length}) file=${configPath}`,
+  );
+  return { buttons: expanded, source: configPath, exists: true, error: null };
+}
+
+/** True when the button pins its own credential instead of auto-discovering. */
+function hasExplicitUsageKey(button: UsageButton): boolean {
+  return Boolean(
+    button.apiKey?.trim() || button.apiKeyEnv?.trim() || button.apiKeyPath?.trim(),
+  );
+}
+
+/**
+ * Turn one CommandCode usage button into one card per discovered login.
+ *
+ * A button with its own `apiKeyPath` / `apiKey` / `apiKeyEnv` is left alone: the
+ * user pinned an account on purpose. A plain `provider: "commandcode"` button
+ * expands to every distinct `commandcode[-_]*` key in auth.json (deduped by
+ * key), each card carrying the `accountSlot` the daemon resolves its key from.
+ * `sourceIndex` lets config edits find the original paseo.json entry again.
+ */
+async function expandCommandCodeButtons(buttons: ButtonConfig[]): Promise<ButtonConfig[]> {
+  const expanded: ButtonConfig[] = [];
+  let accounts: Awaited<ReturnType<typeof discoverCommandCodeAccounts>> | null = null;
+
+  for (const [index, button] of buttons.entries()) {
+    if (button.type !== "usage") {
+      expanded.push(button);
+      continue;
+    }
+    const withSource: UsageButton = { ...button, sourceIndex: index };
+    if (!isCommandCodeProvider(button.provider) || hasExplicitUsageKey(button)) {
+      expanded.push(withSource);
+      continue;
+    }
+
+    accounts ??= await discoverCommandCodeAccounts();
+    if (accounts.accounts.length === 0) {
+      expanded.push(withSource);
+      continue;
+    }
+
+    const multi = accounts.accounts.length > 1;
+    for (const account of accounts.accounts) {
+      expanded.push({
+        ...withSource,
+        accountSlot: account.slot,
+        // Only distinguish labels when several cards would otherwise look alike.
+        ...(multi ? { label: `${button.label} · ${account.account ?? account.slot}` } : {}),
+      });
+    }
+  }
+
+  return expanded;
 }
 
 // ---------------------------------------------------------------------------

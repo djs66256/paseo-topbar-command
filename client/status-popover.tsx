@@ -88,26 +88,26 @@ export function StatusPopover({ theme, layout, workspaceId }: PluginButtonConten
       {usageButtons.length > 0 ? (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>用量</Text>
-          {usageButtons.map((button) => {
-            const entry = usage.entries[button.id];
+          {usageButtons.map((card) => {
+            const entry = usage.entries[card.key];
             const summary = entry?.loading
               ? "获取中…"
               : entry?.error
                 ? `失败：${entry.error}`
                 : usageSummaryLine(entry?.result ?? null);
             return (
-              <View key={button.id} style={styles.row}>
+              <View key={card.key} style={styles.row}>
                 <Text style={styles.label} numberOfLines={1}>
-                  {button.label}
+                  {card.button.label}
                 </Text>
                 <Text style={styles.usageValue} numberOfLines={2}>
                   {summary}
                 </Text>
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel={`刷新 ${button.label}`}
+                  accessibilityLabel={`刷新 ${card.button.label}`}
                   disabled={entry?.loading === true}
-                  onPress={() => void usageStore.fetch(workspaceId, button.id)}
+                  onPress={() => void usageStore.fetch(workspaceId, card.key)}
                   style={styles.iconBtn}
                 >
                   <Icon

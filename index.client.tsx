@@ -26,6 +26,7 @@ import {
   runScriptStopRpc,
   usageConfigSaveRpc,
   usageFetchRpc,
+  usageSetDefaultRpc,
 } from "./shared/rpc";
 
 const LOG_PREFIX = "[paseo-topbar-command]";
@@ -51,6 +52,7 @@ export default function contribute(client: PluginClientContext) {
   configureUsage({
     fetch: (input) => client.rpc(usageFetchRpc, input),
     saveConfig: (input) => client.rpc(usageConfigSaveRpc, input),
+    setDefault: (input) => client.rpc(usageSetDefaultRpc, input),
   });
 
   // Display locations come from plugin.config.json. Paseo registers workspace
@@ -186,11 +188,8 @@ export default function contribute(client: PluginClientContext) {
     }
 
     configs.set(workspaceId, config);
-    usageStore.track(
-      workspaceId,
-      projectRoot,
-      config.buttons.filter((button) => button.type === "usage"),
-    );
+    // Pass the full list: usage card keys are positions in it (see usageStore.track).
+    usageStore.track(workspaceId, projectRoot, config.buttons);
     updateMenu(workspaceId);
   }
 
