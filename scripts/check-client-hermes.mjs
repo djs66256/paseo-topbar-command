@@ -199,7 +199,10 @@ function context() {
     },
     paseo: {
       workspaces: {
-        list: function () {
+        list: function (options) {
+          if (options && options.subscribe && options.subscribe.subscriptionId !== undefined) {
+            return Promise.reject(new Error("Subscription IDs are assigned by the host"));
+          }
           return Promise.resolve({
             requestId: "req_hermes",
             entries: [{
@@ -218,6 +221,7 @@ function context() {
               diffStat: null,
             }],
             pageInfo: { nextCursor: null, prevCursor: null, hasMore: false },
+            subscription: { release: function () { return Promise.resolve(); } },
           });
         },
         subscribe: function () { return function () {}; },

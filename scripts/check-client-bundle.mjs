@@ -133,6 +133,7 @@ function mockClientContext(projectRoot) {
     timelineTransformers: [],
     timelineRenderers: [],
     openPanels: [],
+    workspaceObservationReleased: 0,
   };
   const workspaceId = "wks_smoke";
 
@@ -181,7 +182,13 @@ function mockClientContext(projectRoot) {
     },
     paseo: {
       workspaces: {
-        async list() {
+        async list(options) {
+          // Paseo 0.9+ assigns observation ids itself and rejects a caller-supplied
+          // one. Keeping this check here means the smoke test fails if the plugin
+          // ever goes back to `subscribe: { subscriptionId }`.
+          if (options?.subscribe?.subscriptionId !== undefined) {
+            throw new Error("Subscription IDs are assigned by the host");
+          }
           return {
             requestId: "req_smoke",
             entries: [
@@ -202,6 +209,11 @@ function mockClientContext(projectRoot) {
               },
             ],
             pageInfo: { nextCursor: null, prevCursor: null, hasMore: false },
+            subscription: {
+              release: async () => {
+                seen.workspaceObservationReleased += 1;
+              },
+            },
           };
         },
         subscribe() {
@@ -290,6 +302,8 @@ async function main() {
   if (args.json) console.log(JSON.stringify(seen, null, 2));
 
   cleanup();
+  // releaseWorkspaceObservation() is async; give it a tick to record the release.
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   const hasHeader = seen.headerButtons.some((entry) => entry.workspaceId === workspaceId);
   if (seen.workspacePanels.length === 0 && seen.commandCenterItems.length === 0) {
@@ -300,6 +314,10 @@ async function main() {
     console.log(
       "\nRESULT: panel registered but no header button — the project has no paseo.json, or the header path regressed.",
     );
+    process.exit(1);
+  }
+  if (seen.workspaceObservationReleased === 0) {
+    console.log("\nRESULT: the workspace observation was not released on cleanup.");
     process.exit(1);
   }
   console.log("\nRESULT: client bundle registers the panel and the workspace header button.");

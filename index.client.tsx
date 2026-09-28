@@ -32,8 +32,16 @@ import {
 const LOG_PREFIX = "[paseo-topbar-command]";
 const BOOTSTRAP_ATTEMPTS = 5;
 const BOOTSTRAP_RETRY_MS = 5000;
-/** Stable id so repeated initial lists reuse one daemon subscription. */
-const WORKSPACE_SUBSCRIPTION_ID = "paseo-topbar-command.workspaces";
+/**
+ * Paseo 0.9+ assigns observation ids itself: passing
+ * `subscribe: { subscriptionId }` throws "Subscription IDs are assigned by the
+ * host", which used to fail bootstrap and hide every header button.
+ * `subscribe: {}` works on 0.8 and 0.9; 0.9 additionally returns an owned
+ * observation that has to be released when the plugin unloads (0.8 has none).
+ */
+interface WorkspaceObservation {
+  release?: () => Promise<void>;
+}
 
 interface LoadedConfig {
   buttons: ButtonConfig[];
@@ -93,6 +101,7 @@ export default function contribute(client: PluginClientContext) {
   const refreshes = new Map<string, Promise<void>>();
   const menuUpdates = new Map<string, ReturnType<typeof setTimeout>>();
   let disposed = false;
+  let workspaceObservation: WorkspaceObservation | null = null;
 
   /**
    * The client entry can be evaluated before the daemon-side plugin session is
@@ -225,6 +234,18 @@ export default function contribute(client: PluginClientContext) {
   let bootstrapTimer: ReturnType<typeof setTimeout> | null = null;
   let bootstrapped = false;
 
+  /** Release the 0.9 owned workspace observation (a no-op on 0.8). */
+  async function releaseWorkspaceObservation() {
+    const observation = workspaceObservation;
+    workspaceObservation = null;
+    if (!observation?.release) return;
+    try {
+      await observation.release();
+    } catch (error) {
+      console.error(`${LOG_PREFIX} workspace observation release failed`, error);
+    }
+  }
+
   /**
    * The host client can be connected but still too early for plugin RPCs (the
    * daemon-side subprocess may not be ready). Retry the initial workspace list a
@@ -233,10 +254,13 @@ export default function contribute(client: PluginClientContext) {
    */
   async function bootstrap(attempt = 0) {
     if (disposed || bootstrapped) return;
-    const page = await withRetry(() =>
-      client.paseo.workspaces.list({ subscribe: { subscriptionId: WORKSPACE_SUBSCRIPTION_ID } }),
-    );
-    if (disposed) return;
+    const page = await withRetry(() => client.paseo.workspaces.list({ subscribe: {} }));
+    if (disposed) {
+      void (page as unknown as { subscription?: WorkspaceObservation } | null)?.subscription
+        ?.release?.()
+        .catch(() => {});
+      return;
+    }
     if (!page) {
       if (attempt < 3) {
         bootstrapTimer = setTimeout(() => void bootstrap(attempt + 1), BOOTSTRAP_RETRY_MS);
@@ -244,6 +268,11 @@ export default function contribute(client: PluginClientContext) {
       return;
     }
     bootstrapped = true;
+    // 0.9 returns the owned observation that feeds `workspaces.subscribe`
+    // listeners; keep it so cleanup can release it. 0.8 returns nothing here and
+    // keeps the daemon-side stream alive until the connection closes.
+    workspaceObservation =
+      (page as unknown as { subscription?: WorkspaceObservation }).subscription ?? null;
     for (const workspace of page.entries) track(workspace.id, workspace.projectRootPath);
   }
 
@@ -252,6 +281,7 @@ export default function contribute(client: PluginClientContext) {
   return () => {
     disposed = true;
     if (bootstrapTimer) clearTimeout(bootstrapTimer);
+    void releaseWorkspaceObservation();
     for (const timer of menuUpdates.values()) clearTimeout(timer);
     menuUpdates.clear();
     unsubscribe();

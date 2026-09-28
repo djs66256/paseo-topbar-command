@@ -8,7 +8,7 @@
 
 ## 顶栏按钮
 
-Paseo 0.8 的 `client.addHeaderButton({ id, workspaceId, button })` 在注册时就绑定到
+Paseo 0.8+ 的 `client.addHeaderButton({ id, workspaceId, button })` 在注册时就绑定到
 **某一个 workspace**，所以插件会枚举 daemon 上的 workspace，为**每个存在 `paseo.json` 的项目**
 注册一个顶栏按钮（右上角、内置操作之前）：
 
@@ -26,6 +26,16 @@ Paseo 0.8 的 `client.addHeaderButton({ id, workspaceId, button })` 在注册时
 顶栏位置由 host 决定：宽窗口最多放 3 个插件按钮，窄窗口/移动端只放 1 个，多出的收进 workspace 的「更多操作」菜单。
 菜单项的 id 使用配置下标（`run-0`…）而不是用户填的 `id`，因为 Paseo 会校验菜单 id 必须是
 `^[a-z][a-z0-9-]*$` 并在非法时抛错。
+
+### Paseo 0.9+ 的 workspace 订阅（按钮消失的坑）
+
+Paseo 0.9 起订阅 id 由 host 分配：`workspaces.list({ subscribe: { subscriptionId } })` 会直接抛
+`Subscription IDs are assigned by the host`。旧代码用固定 id 去订阅，于是 bootstrap 一直失败、
+**顶栏按钮一个都不注册**（daemon 日志与 `~/Library/Logs/Paseo/main.log` 里能看到
+`[paseo-topbar-command] RPC failed Error: Subscription IDs are assigned by the host`）。
+现在改成 `workspaces.list({ subscribe: {} })`，它在 0.8 和 0.9+ 上都成立；0.9 返回的
+owned observation 会保存下来，在插件卸载时 `release()`（0.8 没有该字段，静默跳过）。
+`scripts/check-client-bundle.mjs` 的 mock 也会模拟 0.9 行为，再写回固定 id 就会直接报错。
 
 ## 安装
 
