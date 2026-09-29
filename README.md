@@ -10,13 +10,24 @@
 
 Paseo 0.8+ 的 `client.addHeaderButton({ id, workspaceId, button })` 在注册时就绑定到
 **某一个 workspace**，所以插件会枚举 daemon 上的 workspace，为**每个存在 `paseo.json` 的项目**
-注册一个顶栏按钮（右上角、内置操作之前）：
+注册**两个**顶栏按钮（右上角、内置操作之前），拼成一个「分裂按钮」：
 
-- 点击是**菜单**：直接列出该项目 `paseo.json` 里的按钮，Godot 一下打开/切换、导出脚本一下就跑。
-- 菜单底部还有：**运行状态…**（popover，显示运行中/刚结束的任务、耗时、输出末尾，可停止）、
-  **打开 Commands 面板**、**重新加载 paseo.json**。
+- **左边 · 上次点击的工具**：一键重复上次从菜单里点过的 app/脚本。还没点过时默认用 `paseo.json`
+  里第一个可运行按钮（app/script）；只有 usage 按钮的项目左键隐藏。
+- **右边 · 下拉菜单**：直接列出该项目 `paseo.json` 里的按钮，Godot 一下打开/切换、导出脚本一下就跑。
+  - 菜单底部还有：**运行状态…**（popover，显示运行中/刚结束的任务、耗时、输出末尾，可停止）、
+    **打开 Commands 面板**、**重新加载 paseo.json**。
+  - 点菜单里任意 app/脚本都会记成「上次工具」，左键随之更新。
 - 有脚本在运行时，顶栏图标右上角会加一个**强调色小圆点**，不打开就知道在跑。
 - 项目**没有** `paseo.json` 时不显示按钮（新建文件后在面板里点「重新加载」即可出现）。
+
+Paseo 没有原生 split button（“the whole trigger opens the surface”），所以这是**两次 `addHeaderButton`**，
+靠注册顺序决定左右；宽窗口两个都在，窄窗口/移动端只放得下 1 个插件按钮，此时左边的一键按钮优先，
+菜单收进 workspace 的「更多操作」。
+
+「上次工具」存在 daemon 上（`$PASEO_HOME/plugin-state/paseo-topbar-command/last-used.json`，可用
+`PASEO_TOPBAR_STATE_FILE` 覆盖），不写进 `paseo.json`，重启或换客户端都还在；按按钮的 `id` 记忆，
+重排 `paseo.json` 也不会丢，`id` 改名时回退到原位置同类型的按钮。
 
 另外保留两个贡献点：
 
@@ -207,9 +218,10 @@ macOS 下 `open -a/-b` 的语义正是「打开，若已打开则切换到它」
 
 ```
 paseo-plugin.json      清单：插件 id + requirements.paseo (>=0.8.0)
-index.client.tsx       client 入口：枚举 workspace、逐个注册顶栏按钮，兼注册面板与 Command Center 项
+index.client.tsx       client 入口：枚举 workspace、逐个注册两个顶栏按钮，兼注册面板与 Command Center 项
 index.server.ts        server 入口：注册 RPC handler、卸载时停止脚本任务
-client/header.tsx      顶栏按钮：菜单组装 + 带运行小圆点的图标
+client/header.tsx      顶栏按钮：左键一键运行 + 右键菜单组装 + 带运行小圆点的图标
+client/last-used.ts    「上次点击的工具」store（左键按 workspace 记忆，按 id/位置解析）
 client/status-popover.tsx  菜单里的「运行状态…」popover
 client/run-store.ts    运行状态 store（顶栏/面板共用，单一轮询）
 client/refresh-bus.ts  让面板的「重新加载」也能刷新顶栏菜单
@@ -219,6 +231,7 @@ client/usage-card.tsx  用量卡片 UI
 client/usage-store.ts  用量 store（面板/顶栏共用，单一刷新定时器）
 server/commands.ts     daemon 侧：读配置、聚焦应用、spawn 脚本任务（仅 daemon bundle）
 server/usage.ts        daemon 侧：读取 provider 用量（仅 daemon bundle）
+server/state.ts        daemon 侧：持久化「上次工具」（仅 daemon bundle）
 shared/config.ts       paseo.json 的 Zod schema（两端共享）
 shared/rpc.ts          RPC 契约（两端共享）
 scripts/check-client-bundle.mjs  Node(V8) 侧：bundle 能注册面板/顶栏按钮
@@ -245,7 +258,8 @@ iPad / iPhone 是 React Native 的 **Hermes**。Hermes 有个会让本插件在 
 > 函数、闭包、对象字面量不受影响（实测往 bundle 里再塞 1 万个顶层声明也照跑）。
 
 因此 `client/` 与 `shared/` 里的代码（以及它们能 import 到的东西）**不要出现 `class`**：
-`client/run-store.ts`、`client/usage-store.ts` 已经改成工厂函数 + 闭包，不要再改回 `class`。
+`client/run-store.ts`、`client/usage-store.ts`、`client/last-used.ts` 都是工厂函数 + 闭包，
+不要再改回 `class`。
 
 两道检查兜住这个坑：
 

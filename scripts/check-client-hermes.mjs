@@ -195,6 +195,12 @@ function context() {
           error: null,
         });
       }
+      if (contract && contract.name === "paseo-topbar-command.last-used-get") {
+        return Promise.resolve({ tools: {} });
+      }
+      if (contract && contract.name === "paseo-topbar-command.last-used-set") {
+        return Promise.resolve({ ok: true });
+      }
       return Promise.reject(new Error("unexpected rpc " + (contract && contract.name)));
     },
     paseo: {
@@ -270,9 +276,15 @@ function settle() {
   say("PANELS " + registry.workspacePanels.length);
   say("COMMANDS " + registry.commandCenterItems.length);
   say("BUTTONS " + registry.headerButtons.length);
-  var button = registry.headerButtons[0];
-  say("MENU " + (button && button.button && button.button.behavior && button.button.behavior.kind === "menu"
-    ? button.button.behavior.items.length : -1));
+  var menuButton = null;
+  for (var i = 0; i < registry.headerButtons.length; i += 1) {
+    var candidate = registry.headerButtons[i];
+    if (candidate && candidate.button && candidate.button.behavior && candidate.button.behavior.kind === "menu") {
+      menuButton = candidate;
+      break;
+    }
+  }
+  say("MENU " + (menuButton ? menuButton.button.behavior.items.length : -1));
   for (var i = 0; i < out.length; i += 1) print("HERMES_RESULT " + out[i]);
 }
 Promise.resolve().then(settle);
@@ -338,7 +350,7 @@ function main() {
       ["contribute()", phases.get("SETUP_OK")?.startsWith("cleanup=function") === true, phases.get("SETUP_OK") ?? phases.get("SETUP_FAILED")],
       ["workspace panel", phases.get("PANELS") === "1", phases.get("PANELS")],
       ["command center item", phases.get("COMMANDS") === "1", phases.get("COMMANDS")],
-      ["workspace header button", phases.get("BUTTONS") === "1", phases.get("BUTTONS")],
+      ["workspace header button", phases.get("BUTTONS") === "2", phases.get("BUTTONS")],
       ["header menu items", Number(phases.get("MENU") ?? -1) > 0, phases.get("MENU")],
     ];
     for (const [label, ok, detail] of report) {

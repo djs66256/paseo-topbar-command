@@ -10,6 +10,13 @@ import os from "node:os";
 import path from "node:path";
 
 import { parseConfigText, resolvePanelLocations } from "../shared/config";
+import { lastUsedStore } from "../client/last-used";
+import {
+  __resetLastUsedCache,
+  handleLastUsedGet,
+  handleLastUsedSet,
+  sanitizeLastUsed,
+} from "../server/state";
 import { usageGlanceLine } from "../client/usage-format";
 import {
   canonicalAuthProvider,
@@ -1164,6 +1171,91 @@ async function main(): Promise<void> {
     );
     assert.equal(result.ok, false);
     assert.ok(result.message.length > 0);
+  });
+
+  // -------------------------------------------------------------------------
+  console.log("last-used tool (header split button)");
+  // -------------------------------------------------------------------------
+
+  await test("last-used state sanitizes malformed entries", () => {
+    const clean = sanitizeLastUsed({
+      wks_a: { kind: "script", id: "build", index: 1 },
+      wks_b: { kind: "open", id: "x", index: 1 },
+      wks_c: { kind: "app", id: "", index: 0 },
+      wks_d: { kind: "app", id: "ok", index: -1 },
+      wks_e: "nope",
+      "": { kind: "app", id: "ok", index: 0 },
+    });
+    assert.deepEqual(Object.keys(clean), ["wks_a"]);
+  });
+
+  await test("last-used state round-trips through the daemon file", async () => {
+    const file = path.join(tmpRoot, "state", "last-used.json");
+    process.env.PASEO_TOPBAR_STATE_FILE = file;
+    __resetLastUsedCache();
+    try {
+      const saved = await handleLastUsedSet(
+        { workspaceId: "wks_roundtrip", kind: "script", id: "build", index: 2 },
+        ctx,
+      );
+      assert.equal(saved.ok, true);
+      // Force a fresh read so the assertion exercises the file, not the cache.
+      __resetLastUsedCache();
+      const got = await handleLastUsedGet({}, ctx);
+      assert.deepEqual(got.tools.wks_roundtrip, { kind: "script", id: "build", index: 2 });
+    } finally {
+      delete process.env.PASEO_TOPBAR_STATE_FILE;
+      __resetLastUsedCache();
+    }
+  });
+
+  await test("last-used resolve follows identity, position, then first runnable", () => {
+    const config = parseConfigText(
+      JSON.stringify({
+        buttons: [
+          { type: "usage", id: "cc", label: "CommandCode", provider: "commandcode" },
+          { type: "script", id: "build", label: "构建", command: "pnpm build" },
+          { type: "app", id: "godot", label: "Godot", app: "Godot" },
+        ],
+      }),
+    );
+    assert.equal(config.error, null);
+    // Nothing remembered yet: the first runnable button.
+    assert.equal(lastUsedStore.resolve("wks_resolve", config.buttons)?.button.id, "build");
+
+    // Identity wins even after the list is reordered.
+    lastUsedStore.record("wks_resolve", { kind: "app", id: "godot", index: 2 });
+    const reordered = parseConfigText(
+      JSON.stringify({
+        buttons: [
+          { type: "app", id: "godot", label: "Godot", app: "Godot" },
+          { type: "script", id: "build", label: "构建", command: "pnpm build" },
+        ],
+      }),
+    );
+    const byIdentity = lastUsedStore.resolve("wks_resolve", reordered.buttons);
+    assert.equal(byIdentity?.button.id, "godot");
+    assert.equal(byIdentity?.key.index, 0);
+
+    // Identity gone but the slot is still the same kind: keep the position.
+    lastUsedStore.record("wks_resolve", { kind: "script", id: "gone", index: 1 });
+    const position = parseConfigText(
+      JSON.stringify({
+        buttons: [
+          { type: "usage", id: "cc", label: "CC", provider: "commandcode" },
+          { type: "script", id: "test", label: "测试", command: "pnpm test" },
+        ],
+      }),
+    );
+    assert.equal(lastUsedStore.resolve("wks_resolve", position.buttons)?.button.id, "test");
+
+    // Usage-only config: no left button.
+    const usageOnly = parseConfigText(
+      JSON.stringify({
+        buttons: [{ type: "usage", id: "cc", label: "CC", provider: "commandcode" }],
+      }),
+    );
+    assert.equal(lastUsedStore.resolve("wks_resolve", usageOnly.buttons), null);
   });
 
   // -------------------------------------------------------------------------

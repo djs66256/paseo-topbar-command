@@ -134,12 +134,21 @@ function mockClientContext(projectRoot) {
     timelineRenderers: [],
     openPanels: [],
     workspaceObservationReleased: 0,
+    lastUsedSaves: [],
   };
   const workspaceId = "wks_smoke";
 
-  const registration = (bucket, entry) => {
+  const registration = (bucket, entry, target = entry) => {
     seen[bucket].push(entry);
-    return { update() {}, remove() {} };
+    // Header buttons are updated in place; mirror that (target is the descriptor,
+    // not the { id, workspaceId, button } wrapper) so the check can observe the
+    // left button following a menu click.
+    return {
+      update(patch) {
+        Object.assign(target, patch ?? {});
+      },
+      remove() {},
+    };
   };
 
   const context = {
@@ -154,9 +163,9 @@ function mockClientContext(projectRoot) {
     addTimelineTransformer: (contribution) => registration("timelineTransformers", contribution),
     addTimelineRenderer: (contribution) => registration("timelineRenderers", contribution),
     addHeaderButton: ({ id, workspaceId: target, button }) =>
-      registration("headerButtons", { id, workspaceId: target, button }),
+      registration("headerButtons", { id, workspaceId: target, button }, button),
     addComposerPill: ({ id, workspaceId: target, agentId, button }) =>
-      registration("composerPills", { id, workspaceId: target, agentId, button }),
+      registration("composerPills", { id, workspaceId: target, agentId, button }, button),
     openPanel: (id, options) => seen.openPanels.push({ id, options }),
     openSettings: (id) => seen.openPanels.push({ id, settings: true }),
     async rpc(contract, input) {
@@ -177,6 +186,22 @@ function mockClientContext(projectRoot) {
           }
         }
         return { buttons, source: file, exists, error };
+      }
+      if (contract?.name === `${PLUGIN_ID}.last-used-get`) {
+        return { tools: {} };
+      }
+      if (contract?.name === `${PLUGIN_ID}.last-used-set`) {
+        seen.lastUsedSaves.push(input);
+        return { ok: true };
+      }
+      if (contract?.name === `${PLUGIN_ID}.script-start`) {
+        return { ok: true, error: null };
+      }
+      if (contract?.name === `${PLUGIN_ID}.script-poll`) {
+        return { status: "succeeded", exitCode: 0, output: [], startedAt: null, finishedAt: null };
+      }
+      if (contract?.name === `${PLUGIN_ID}.open-app`) {
+        return { ok: true, message: "ok" };
       }
       throw new Error(`unexpected RPC in client check: ${contract?.name ?? contract}`);
     },
@@ -286,6 +311,23 @@ async function main() {
   // The entry enumerates workspaces asynchronously, so let those promises settle.
   await new Promise((resolve) => setTimeout(resolve, 500));
 
+  // Click the last runnable dropdown entry; the left header button must follow it
+  // and the choice must be persisted through last-used-set.
+  const menuEntry = seen.headerButtons.find(
+    (entry) => entry.workspaceId === workspaceId && entry.button.behavior.kind === "menu",
+  );
+  const runItems = (menuEntry?.button.behavior.items ?? []).filter(
+    (item) =>
+      item.kind === "item" &&
+      /^run-\d+$/.test(item.id) &&
+      item.behavior.kind === "action",
+  );
+  const clicked = runItems[runItems.length - 1];
+  if (!clicked) throw new Error("no runnable menu item to click");
+  await clicked.behavior.onPress();
+  // 250ms debounce in index.client.tsx plus a margin.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
   console.log(`\nregistered: workspacePanels=${seen.workspacePanels.length} commandCenterItems=${seen.commandCenterItems.length} headerButtons=${seen.headerButtons.length}`);
   for (const panel of seen.workspacePanels) {
     console.log(`  panel ${panel.id}: ${panel.title} [${panel.context}] locations=${(panel.locations ?? []).join("+")}`);
@@ -306,6 +348,7 @@ async function main() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   const hasHeader = seen.headerButtons.some((entry) => entry.workspaceId === workspaceId);
+  const workspaceButtons = seen.headerButtons.filter((entry) => entry.workspaceId === workspaceId);
   if (seen.workspacePanels.length === 0 && seen.commandCenterItems.length === 0) {
     console.log("\nRESULT: no workspace panel and no command item — the client bundle would show nothing.");
     process.exit(1);
@@ -316,11 +359,38 @@ async function main() {
     );
     process.exit(1);
   }
+  // The split button is two registrations: action first (left), menu second (right).
+  const kinds = workspaceButtons.map((entry) => entry.button.behavior.kind).join(",");
+  if (kinds !== "action,menu") {
+    console.log(
+      `\nRESULT: expected header buttons [action, menu] (run + dropdown), got [${kinds}].`,
+    );
+    process.exit(1);
+  }
+  // Clicking the dropdown must retarget the left button and persist the choice.
+  const runEntry = workspaceButtons.find((entry) => entry.button.behavior.kind === "action");
+  const saved = seen.lastUsedSaves[seen.lastUsedSaves.length - 1];
+  const expectedIndex = Number(clicked.id.slice("run-".length));
+  if (
+    !runEntry ||
+    runEntry.button.title !== `运行：${clicked.title}` ||
+    saved?.index !== expectedIndex ||
+    typeof saved?.id !== "string" ||
+    saved.id.length === 0
+  ) {
+    console.log(
+      `\nRESULT: left button did not follow the clicked tool (title=${runEntry?.button.title}, saved=${JSON.stringify(saved)}).`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `  last-used: clicked "${clicked.title}" -> left button "${runEntry.button.title}" (saved ${JSON.stringify(saved)})`,
+  );
   if (seen.workspaceObservationReleased === 0) {
     console.log("\nRESULT: the workspace observation was not released on cleanup.");
     process.exit(1);
   }
-  console.log("\nRESULT: client bundle registers the panel and the workspace header button.");
+  console.log("\nRESULT: client bundle registers the panel and both header buttons (run + dropdown).");
 }
 
 main().catch((error) => {

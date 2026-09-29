@@ -14,14 +14,17 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { View } from "react-native";
 import { DEFAULT_USAGE_REFRESH_MINUTES, type ButtonConfig, type UsageButton } from "../shared/config";
 import { runStore, useWorkspaceRuns } from "./run-store";
+import { lastUsedStore, type RunnableTool } from "./last-used";
 import { StatusPopover } from "./status-popover";
 import { usageGlanceLine } from "./usage-format";
 import { usageStore, type UsageEntryView } from "./usage-store";
 
 /** Workspace panel id registered by the client entry; the menu opens it by id. */
 export const COMMANDS_PANEL_ID = "commands";
-/** Plugin-local button id. Paseo scopes it per workspace, so it repeats safely. */
+/** Right header button id: the dropdown. Paseo scopes it per workspace, so it repeats safely. */
 export const HEADER_BUTTON_ID = "commands";
+/** Left header button id: repeats the last tool the user clicked. */
+export const RUN_BUTTON_ID = "commands-run";
 
 function CommandsIcon({ workspaceId, size, color, theme }: PluginButtonIconProps) {
   const runs = useWorkspaceRuns(workspaceId);
@@ -84,6 +87,49 @@ export interface HeaderMenuInput {
 }
 
 /**
+ * Remember the click, then run the tool. Both the dropdown item and the left
+ * header button go through here, so either one updates "last used".
+ */
+export function runTool(
+  workspaceId: string,
+  projectRoot: string,
+  tool: RunnableTool,
+): Promise<void> {
+  lastUsedStore.record(workspaceId, tool.key);
+  return tool.button.type === "app"
+    ? runStore.runApp(workspaceId, projectRoot, tool.button)
+    : runStore.startScript(workspaceId, projectRoot, tool.button);
+}
+
+/**
+ * The left header button: one click runs the remembered tool. Paseo has no
+ * split-button behavior, so this is a separate registration from the dropdown,
+ * rendered to its left by registration order. Hidden when the project has no
+ * app/script button at all (usage-only configs).
+ */
+export function createRunButton(
+  workspaceId: string,
+  projectRoot: string,
+  tool: RunnableTool | null,
+): PluginButton {
+  if (!tool) {
+    return {
+      title: "运行上次的工具",
+      icon: "Play",
+      visible: false,
+      behavior: { kind: "action", onPress() {} },
+    };
+  }
+  return {
+    title: `运行：${tool.button.label}`,
+    icon: tool.button.type === "app" ? "AppWindow" : "Play",
+    // The label is the whole point: it names the tool the button will run.
+    label: tool.button.label,
+    behavior: { kind: "action", onPress: () => runTool(workspaceId, projectRoot, tool) },
+  };
+}
+
+/**
  * Menu ids come from the config index, not from user-authored button ids: Paseo
  * validates menu ids against `^[a-z][a-z0-9-]*$` and throws when one is invalid,
  * which would take the whole button down.
@@ -141,9 +187,10 @@ export function createHeaderMenu({
           kind: "action",
           // Returning the promise lets Paseo show busy state and surface failures.
           onPress: () =>
-            button.type === "app"
-              ? runStore.runApp(workspaceId, projectRoot, button)
-              : runStore.startScript(workspaceId, projectRoot, button),
+            runTool(workspaceId, projectRoot, {
+              key: { kind: button.type, id: button.id, index },
+              button,
+            }),
         },
       });
     });

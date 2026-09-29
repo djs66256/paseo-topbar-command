@@ -82,7 +82,11 @@ class DaemonRpc {
       return;
     }
     const message = parsed?.message ?? parsed;
-    if (message?.type === "server_info") {
+    // Paseo 0.8 sent a flat `server_info`; 0.9 wraps it as a `status` message.
+    if (
+      message?.type === "server_info" ||
+      (message?.type === "status" && message?.payload?.status === "server_info")
+    ) {
       this.serverInfo = message;
       this.connected.resolve();
       return;

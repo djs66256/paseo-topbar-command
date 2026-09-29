@@ -1,17 +1,25 @@
 // Client entry (Paseo 0.8 runtime entry). Contributes three things per connected app:
 //
-//  1. A workspace header button per tracked workspace: a menu of that project's
-//     paseo.json buttons, plus usage, run status, the panel, and a config reload.
-//     Paseo binds a header button to one workspace, so the plugin enumerates
-//     workspaces and registers one button each. Projects without a paseo.json get
-//     no button.
+//  1. Two workspace header buttons per tracked workspace, emulating a split
+//     button: the left repeats the last clicked tool as a one-click action, the
+//     right opens a menu of that project's paseo.json buttons plus usage, run
+//     status, the panel, and a config reload. Paseo has no split-button
+//     primitive, so these are two registrations; a project without a paseo.json
+//     gets no buttons.
 //  2. The Commands workspace panel, which shows full status, output and usage.
 //  3. A Command Center item that opens that panel.
 import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
 import { CommandsPanel } from "./client/commands";
-import { COMMANDS_PANEL_ID, HEADER_BUTTON_ID, createHeaderMenu } from "./client/header";
+import {
+  COMMANDS_PANEL_ID,
+  HEADER_BUTTON_ID,
+  RUN_BUTTON_ID,
+  createHeaderMenu,
+  createRunButton,
+} from "./client/header";
 import { clearWorkspaceRefresher, setWorkspaceRefresher } from "./client/refresh-bus";
 import { configureRuns } from "./client/run-store";
+import { configureLastUsed, lastUsedStore } from "./client/last-used";
 import { configureUsage, usageStore } from "./client/usage-store";
 import { resolvePanelLocations, type ButtonConfig } from "./shared/config";
 // Panel locations are plugin-level (Paseo registers them once at load). The file
@@ -19,6 +27,8 @@ import { resolvePanelLocations, type ButtonConfig } from "./shared/config";
 // shared/ — a root-level file that is imported is a build error.
 import pluginConfig from "./client/plugin.config.json";
 import {
+  lastUsedGetRpc,
+  lastUsedSetRpc,
   loadConfigRpc,
   openAppRpc,
   runScriptPollRpc,
@@ -62,6 +72,21 @@ export default function contribute(client: PluginClientContext) {
     saveConfig: (input) => client.rpc(usageConfigSaveRpc, input),
     setDefault: (input) => client.rpc(usageSetDefaultRpc, input),
   });
+  configureLastUsed({
+    load: async () => {
+      // Same startup race as load-config: the daemon-side session may not be
+      // ready yet, so retry before giving up on the persisted choice.
+      const result = await withRetry(() => client.rpc(lastUsedGetRpc, {}));
+      return result?.tools ?? {};
+    },
+    save: (workspaceId, key) =>
+      client.rpc(lastUsedSetRpc, {
+        workspaceId,
+        kind: key.kind,
+        id: key.id,
+        index: key.index,
+      }),
+  });
 
   // Display locations come from plugin.config.json. Paseo registers workspace
   // panel locations once at plugin load, so this is plugin-level (not per
@@ -95,7 +120,13 @@ export default function contribute(client: PluginClientContext) {
   });
 
   // --- header buttons --------------------------------------------------------
-  const registrations = new Map<string, PluginButtonRegistration>();
+  // Two per workspace, emulating a split button: RUN_BUTTON_ID on the left
+  // repeats the last tool, HEADER_BUTTON_ID on the right opens the dropdown.
+  interface HeaderRegistrations {
+    run: PluginButtonRegistration;
+    menu: PluginButtonRegistration;
+  }
+  const registrations = new Map<string, HeaderRegistrations>();
   const projectRoots = new Map<string, string>();
   const configs = new Map<string, LoadedConfig>();
   const refreshes = new Map<string, Promise<void>>();
@@ -123,7 +154,10 @@ export default function contribute(client: PluginClientContext) {
   }
 
   function hideButton(workspaceId: string) {
-    registrations.get(workspaceId)?.remove();
+    const existing = registrations.get(workspaceId);
+    if (!existing) return;
+    existing.run.remove();
+    existing.menu.remove();
     registrations.delete(workspaceId);
   }
 
@@ -136,35 +170,44 @@ export default function contribute(client: PluginClientContext) {
   }
 
   /**
-   * Rebuild one header button from the cached config plus current usage state.
-   * No RPC here: this also runs when a usage fetch settles, and a menu title
-   * update must not re-read paseo.json.
+   * Rebuild this workspace's header buttons from the cached config plus current
+   * usage/last-used state. No RPC here: this also runs when a usage fetch
+   * settles, and a menu title update must not re-read paseo.json.
    */
-  function updateMenu(workspaceId: string) {
+  function updateButtons(workspaceId: string) {
     const projectRoot = projectRoots.get(workspaceId);
     const config = configs.get(workspaceId);
     if (disposed || !projectRoot || !config) return;
 
-    const button = createHeaderMenu({
+    const menuButton = createHeaderMenu({
       client,
       workspaceId,
       projectRoot,
       config,
       onReload: () => requestRefresh(workspaceId),
     });
+    const runButton = createRunButton(
+      workspaceId,
+      projectRoot,
+      lastUsedStore.resolve(workspaceId, config.buttons),
+    );
 
     const existing = registrations.get(workspaceId);
     if (existing) {
-      existing.update(button);
+      existing.run.update(runButton);
+      existing.menu.update(menuButton);
       return;
     }
 
-    const registration = client.addHeaderButton({ id: HEADER_BUTTON_ID, workspaceId, button });
+    // Registration order is render order: left (run) first, right (menu) second.
+    const run = client.addHeaderButton({ id: RUN_BUTTON_ID, workspaceId, button: runButton });
+    const menu = client.addHeaderButton({ id: HEADER_BUTTON_ID, workspaceId, button: menuButton });
     if (disposed) {
-      registration.remove();
+      run.remove();
+      menu.remove();
       return;
     }
-    registrations.set(workspaceId, registration);
+    registrations.set(workspaceId, { run, menu });
   }
 
   /** Coalesce usage-driven menu updates; a fetch settling many entries is one update. */
@@ -174,7 +217,7 @@ export default function contribute(client: PluginClientContext) {
       workspaceId,
       setTimeout(() => {
         menuUpdates.delete(workspaceId);
-        updateMenu(workspaceId);
+        updateButtons(workspaceId);
       }, 250),
     );
   }
@@ -199,7 +242,7 @@ export default function contribute(client: PluginClientContext) {
     configs.set(workspaceId, config);
     // Pass the full list: usage card keys are positions in it (see usageStore.track).
     usageStore.track(workspaceId, projectRoot, config.buttons);
-    updateMenu(workspaceId);
+    updateButtons(workspaceId);
   }
 
   /** Serialized per workspace so two updates cannot register the same button twice. */
@@ -228,6 +271,11 @@ export default function contribute(client: PluginClientContext) {
 
   // Menu titles carry usage summaries, so rebuild them when usage changes.
   const unsubscribeUsage = usageStore.subscribe(() => {
+    for (const workspaceId of projectRoots.keys()) scheduleMenuUpdate(workspaceId);
+  });
+
+  // The left button follows the last-used tool, so a click rebuilds both buttons.
+  const unsubscribeLastUsed = lastUsedStore.subscribe(() => {
     for (const workspaceId of projectRoots.keys()) scheduleMenuUpdate(workspaceId);
   });
 
@@ -277,6 +325,8 @@ export default function contribute(client: PluginClientContext) {
   }
 
   void bootstrap();
+  // Persisted "last used" replaces the first-runnable default once loaded.
+  void lastUsedStore.hydrate();
 
   return () => {
     disposed = true;
@@ -286,8 +336,11 @@ export default function contribute(client: PluginClientContext) {
     menuUpdates.clear();
     unsubscribe();
     unsubscribeUsage();
+    unsubscribeLastUsed();
     for (const workspaceId of [...projectRoots.keys()]) {
-      registrations.get(workspaceId)?.remove();
+      const existing = registrations.get(workspaceId);
+      existing?.run.remove();
+      existing?.menu.remove();
       clearWorkspaceRefresher(workspaceId);
     }
     registrations.clear();
@@ -296,5 +349,6 @@ export default function contribute(client: PluginClientContext) {
     refreshes.clear();
     configureRuns(null);
     configureUsage(null);
+    configureLastUsed(null);
   };
 }

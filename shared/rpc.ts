@@ -152,3 +152,40 @@ export const usageSetDefaultRpc = defineRpc({
     source: z.string(),
   }),
 });
+
+/** One runnable button remembered as "last used" for a workspace. */
+export const toolKeySchema = z.object({
+  kind: z.enum(["app", "script"]),
+  /** The button's `id` in paseo.json; preferred over the index when resolving. */
+  id: z.string().min(1),
+  /** Position in paseo.json at click time, used as a fallback after edits. */
+  index: z.number().int().nonnegative(),
+});
+
+/**
+ * The last tool the user clicked per workspace, so the left header button can
+ * repeat it with one click and the right one opens the dropdown. Paseo has no
+ * split-button primitive, so the entry registers two header buttons.
+ *
+ * State lives on the daemon (not in paseo.json) and is shared by every client.
+ */
+export const lastUsedGetRpc = defineRpc({
+  name: "paseo-topbar-command.last-used-get",
+  input: z.object({}),
+  output: z.object({
+    /** workspaceId -> remembered tool. Entries for removed workspaces are harmless. */
+    tools: z.record(z.string(), toolKeySchema),
+  }),
+});
+
+/** Remember a menu click as the workspace's "last used" tool. */
+export const lastUsedSetRpc = defineRpc({
+  name: "paseo-topbar-command.last-used-set",
+  input: z.object({
+    workspaceId: z.string().min(1),
+    kind: z.enum(["app", "script"]),
+    id: z.string().min(1),
+    index: z.number().int().nonnegative(),
+  }),
+  output: z.object({ ok: z.boolean() }),
+});

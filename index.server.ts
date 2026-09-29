@@ -10,7 +10,10 @@ import {
   stopAllScripts,
 } from "./server/commands";
 import { handleUsageConfigSave, handleUsageFetch, handleUsageSetDefault } from "./server/usage";
+import { handleLastUsedGet, handleLastUsedSet } from "./server/state";
 import {
+  lastUsedGetRpc,
+  lastUsedSetRpc,
   loadConfigRpc,
   openAppRpc,
   runScriptPollRpc,
@@ -30,6 +33,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(usageFetchRpc, handleUsageFetch);
   server.handle(usageConfigSaveRpc, handleUsageConfigSave);
   server.handle(usageSetDefaultRpc, handleUsageSetDefault);
+  server.handle(lastUsedGetRpc, handleLastUsedGet);
+  server.handle(lastUsedSetRpc, handleLastUsedSet);
 
   return () => {
     console.log("[paseo-topbar-command] plugin cleanup: unloading, stopping scripts");
